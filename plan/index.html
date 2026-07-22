@@ -741,7 +741,11 @@ function getDayData(mk,dk){
 function getStuData(mk,dk,name){
   const d=getDayData(mk,dk);
   if(!d.students[name])d.students[name]=defStu();
-  return d.students[name];
+  const sd=d.students[name];
+  if(Array.isArray(sd.itemStatus))sd.itemStatus=normMap(sd.itemStatus);
+  if(Array.isArray(sd.itemScore))sd.itemScore=normMap(sd.itemScore);
+  if(Array.isArray(sd.itemRate))sd.itemRate=normMap(sd.itemRate);
+  return sd;
 }
 // textarea 값 수집
 function collectTaValues(){
@@ -802,6 +806,22 @@ function parseItems(text){
     it.key=seen[base]>1?base+'_'+seen[base]:base;
   });
   return arr;
+}
+// Firebase가 0,1,2 키를 배열로 되돌려주면 문자열 키 저장이 통째로 유실된다 → 항상 객체로 정규화
+function normMap(o){
+  if(o===null||o===undefined)return {};
+  if(Array.isArray(o)){const r={};o.forEach((v,i)=>{if(v!==null&&v!==undefined)r[String(i)]=v;});return r;}
+  return o;
+}
+// 옛 인덱스 기록을 현재 항목의 고유 키로 이전한 뒤 인덱스 항목 제거
+function migrateStates(sd,items){
+  sd.itemStatus=normMap(sd.itemStatus);sd.itemScore=normMap(sd.itemScore);sd.itemRate=normMap(sd.itemRate);
+  (items||[]).forEach((it,i)=>{
+    ['itemStatus','itemScore','itemRate'].forEach(f=>{
+      const m=sd[f],ik=String(i);
+      if(m[ik]!==undefined){if(it&&it.key&&m[it.key]===undefined)m[it.key]=m[ik];delete m[ik];}
+    });
+  });
 }
 // 항목 상태 조회: 새 키 우선, 없으면 옛 인덱스 방식으로 폴백(기존 기록 보존)
 function pickState(map,item,i){
@@ -1211,6 +1231,7 @@ function cycleStatusAdmin(mk,dk,name,idx){
   if(!sd.itemStatus)sd.itemStatus={};
   const its=parseItems(effTask(getDayData(mk,dk),sd,name));
   const it=its[idx];if(!it)return;
+  migrateStates(sd,its);
   const cur=itemState(sd,idx,it);
   sd.itemStatus[it.key]=cur==='none'?'wip':cur==='wip'?'done':cur==='done'?'fail':'none';
   if(sd.itemStatus[idx]!==undefined)delete sd.itemStatus[idx];
@@ -1617,6 +1638,7 @@ function cycleStatus(idx){
   const day=getDayData(mc.key,dk);
   const its=parseItems(effTask(day,sd,curStudent));
   const it=its[idx];if(!it)return;
+  migrateStates(sd,its);
   const cur=itemState(sd,idx,it);
   sd.itemStatus[it.key]=cur==='none'?'wip':cur==='wip'?'done':cur==='done'?'fail':'none';
   if(sd.itemStatus[idx]!==undefined)delete sd.itemStatus[idx];
@@ -1632,7 +1654,7 @@ function setItemScore(idx,val){
   const day=getDayData(mc.key,dk);
   const its=parseItems(effTask(day,sd,curStudent));
   const it=its[idx];if(!it)return;
-  if(sd.itemScore[idx]!==undefined)delete sd.itemScore[idx];
+  migrateStates(sd,its);
   if(val===''||val===null){delete sd.itemScore[it.key];}else{sd.itemScore[it.key]=Number(val);}
   recomputeDone(sd,its);
   const sy=window.scrollY;const taVals=collectTaValues();
@@ -1646,7 +1668,7 @@ function setItemRate(idx,val){
   const day=getDayData(mc.key,dk);
   const its=parseItems(effTask(day,sd,curStudent));
   const it=its[idx];if(!it)return;
-  if(sd.itemRate[idx]!==undefined)delete sd.itemRate[idx];
+  migrateStates(sd,its);
   sd.itemRate[it.key]=Number(val)||0;
   recomputeDone(sd,its);
   const sy=window.scrollY;const taVals=collectTaValues();
@@ -1867,6 +1889,7 @@ function saveMyPlan(mk,dk){
   const di=document.getElementById('myDlDate');
   sd.deadlineDate=(sd.deadlineType==='date'&&di)?di.value:'';
   const items=parseItems(effTask(getDayData(mk,dk),sd,curStudent));
+  migrateStates(sd,items);
   recomputeDone(sd,items);
   if(!sd.planTime&&sd.task.trim())sd.planTime=new Date().toISOString();
   pushStu(mk,dk,curStudent);
