@@ -410,6 +410,11 @@ input[type=date],input[type=number]{color-scheme:light}
       <div class="dot"></div>
       <div class="nm">강나율</div>
       <div class="gr">11년생</div>
+    </div><div class="stu-btn " onclick="openPin(&#39;stu&#39;,&#39;최아인&#39;)">
+      
+      <div class="dot"></div>
+      <div class="nm">최아인</div>
+      <div class="gr">11년생</div>
     </div><div class="stu-btn " onclick="openPin(&#39;stu&#39;,&#39;전지우&#39;)">
       
       <div class="dot"></div>
@@ -457,6 +462,10 @@ input[type=date],input[type=number]{color-scheme:light}
     </div><div class="stu-btn" onclick="openPin(&#39;parent&#39;,&#39;강나율&#39;)">
       <div class="dot"></div>
       <div class="nm">강나율</div>
+      <div class="gr">학부모</div>
+    </div><div class="stu-btn" onclick="openPin(&#39;parent&#39;,&#39;최아인&#39;)">
+      <div class="dot"></div>
+      <div class="nm">최아인</div>
       <div class="gr">학부모</div>
     </div><div class="stu-btn" onclick="openPin(&#39;parent&#39;,&#39;전지우&#39;)">
       <div class="dot"></div>
@@ -603,12 +612,12 @@ const FB={
 };
 const STUDENTS=[
   {name:"김하은",grade:"11년생",group:"g11"},{name:"윤건후",grade:"11년생",group:"g11"},{name:"오윤아",grade:"11년생",group:"g11"},
-  {name:"강나율",grade:"11년생",group:"g11"},{name:"전지우",grade:"11년생",group:"g11"},
+  {name:"강나율",grade:"11년생",group:"g11"},{name:"최아인",grade:"11년생",group:"g11"},{name:"전지우",grade:"11년생",group:"g11"},
   {name:"윤선후",grade:"09년생",group:"g09"},{name:"이민혁",grade:"09년생",group:"g09"},{name:"황윤성",grade:"09년생",group:"g09"},
   {name:"임하영",grade:"10년생",group:"g10"},{name:"김소율",grade:"10년생",group:"g10"},
 ];
 const GROUPS=[
-  {key:"g11",label:"11년생반",icon:"🎯",members:"하은·건후·윤아·나율·지우"},
+  {key:"g11",label:"11년생반",icon:"🎯",members:"하은·건후·윤아·나율·아인·지우"},
   {key:"g09",label:"09년생",icon:"🔥",members:"선후·민혁·윤성"},
   {key:"g10",label:"10년생",icon:"📘",members:"하영·소율"},
 ];
@@ -782,21 +791,38 @@ function parseItemLine(line){
   }
   return {num:parseInt(m[1]),text:body,type,max,cut,cutRel};
 }
-function parseItems(text){if(!text)return[];return text.split('\n').map(parseItemLine).filter(Boolean);}
+function hashStr(s){let h=5381;for(let i=0;i<s.length;i++){h=((h<<5)+h+s.charCodeAt(i))>>>0;}return h.toString(36);}
+function parseItems(text){
+  if(!text)return[];
+  const arr=text.split('\n').map(parseItemLine).filter(Boolean);
+  const seen={};
+  arr.forEach(it=>{
+    const base='k'+hashStr((it.text||'').replace(/\s+/g,' ').trim()+'|'+it.type);
+    seen[base]=(seen[base]||0)+1;
+    it.key=seen[base]>1?base+'_'+seen[base]:base;
+  });
+  return arr;
+}
+// 항목 상태 조회: 새 키 우선, 없으면 옛 인덱스 방식으로 폴백(기존 기록 보존)
+function pickState(map,item,i){
+  const m=map||{};
+  if(item&&item.key!==undefined&&m[item.key]!==undefined)return m[item.key];
+  return m[i];
+}
 function stripCrit(text){return String(text||'').split('\n').map(l=>{const i=l.indexOf('::');return i>=0?l.slice(0,i).trimEnd():l;}).join('\n');}
 function passOf(item,score){if(item.cut==null||score==null||isNaN(score))return null;return item.cutRel?(item.max-score)<=item.cut:score>=item.cut;}
 function itemState(sd,i,item){
   if(item.type==='test'){
-    const sc=(sd.itemScore||{})[i];
+    const sc=pickState(sd.itemScore,item,i);
     if(sc===undefined||sc===null||sc==='')return 'none';
     if(item.cut==null)return 'done';
     return passOf(item,Number(sc))?'done':'wip';
   }
   if(item.type==='rate'){
-    const r=Number((sd.itemRate||{})[i]||0);
+    const r=Number(pickState(sd.itemRate,item,i)||0);
     return r>=100?'done':r>0?'wip':'none';
   }
-  const s=(sd.itemStatus||{})[i];return s||'none';
+  const s=pickState(sd.itemStatus,item,i);return s||'none';
 }
 function recomputeDone(sd,items){sd.done=items.length>0&&items.every((it,i)=>itemState(sd,i,it)==='done');if(sd.done&&!sd.doneTime)sd.doneTime=new Date().toISOString();}
 
@@ -1062,8 +1088,8 @@ function renderAdminDaily(ct,mc){
     const itemRows=items.map((it,i)=>{
       const stt=states[i];const dot=stt==='done'?'✅':stt==='wip'?'🔄':stt==='fail'?'❌':'⬜';
       let extra='';
-      if(it.type==='test'){const sc=(sd.itemScore||{})[i];const has=sc!==undefined&&sc!==null&&sc!=='';const p=passOf(it,has?Number(sc):null);extra=has?`<b style="color:var(--text)">${sc}/${it.max}</b>${p===null?'':p?' <span style="color:var(--green2);font-weight:700">통과</span>':' <span style="color:var(--red2);font-weight:700">비통과</span>'}`:'<span style="color:var(--text3)">미응시</span>';}
-      else if(it.type==='rate'){const r=Number((sd.itemRate||{})[i]||0);extra=`<b style="color:var(--text)">${r}%</b>`;}
+      if(it.type==='test'){const sc=pickState(sd.itemScore,it,i);const has=sc!==undefined&&sc!==null&&sc!=='';const p=passOf(it,has?Number(sc):null);extra=has?`<b style="color:var(--text)">${sc}/${it.max}</b>${p===null?'':p?' <span style="color:var(--green2);font-weight:700">통과</span>':' <span style="color:var(--red2);font-weight:700">비통과</span>'}`:'<span style="color:var(--text3)">미응시</span>';}
+      else if(it.type==='rate'){const r=Number(pickState(sd.itemRate,it,i)||0);extra=`<b style="color:var(--text)">${r}%</b>`;}
       const tag=it.type==='test'?' <span style="font-size:9px;color:var(--blue3)">[시험]</span>':it.type==='rate'?' <span style="font-size:9px;color:var(--blue3)">[완료율]</span>':'';
       const isCheck=it.type!=='test'&&it.type!=='rate';
       const dotHtml=isCheck?`<span id="adot_${nid}_${i}" onclick="cycleStatusAdmin('${mc.key}','${dk}','${s.name}',${i})" style="cursor:pointer;font-size:14px;user-select:none" title="클릭: 시작전→진행중→완료→실패">${dot}</span>`:`<span id="adot_${nid}_${i}">${dot}</span>`;
@@ -1183,9 +1209,12 @@ function patchAdminStuRow(mk,dk,name){
 function cycleStatusAdmin(mk,dk,name,idx){
   const sd=getStuData(mk,dk,name);
   if(!sd.itemStatus)sd.itemStatus={};
-  const cur=sd.itemStatus[idx]||'none';
-  sd.itemStatus[idx]=cur==='none'?'wip':cur==='wip'?'done':cur==='done'?'fail':'none';
-  recomputeDone(sd,parseItems(effTask(getDayData(mk,dk),sd,name)));
+  const its=parseItems(effTask(getDayData(mk,dk),sd,name));
+  const it=its[idx];if(!it)return;
+  const cur=itemState(sd,idx,it);
+  sd.itemStatus[it.key]=cur==='none'?'wip':cur==='wip'?'done':cur==='done'?'fail':'none';
+  if(sd.itemStatus[idx]!==undefined)delete sd.itemStatus[idx];
+  recomputeDone(sd,its);
   pushStu(mk,dk,name);
   patchAdminStuRow(mk,dk,name);buildHomeGrid();
 }
@@ -1462,7 +1491,7 @@ function renderStuToday(ct,mc){
       ${items.map((item,i)=>{
         const status=states[i];
         if(item.type==='test'){
-          const sc=(sd.itemScore||{})[i];
+          const sc=pickState(sd.itemScore,it,i);
           const scVal=(sc===undefined||sc===null)?'':sc;
           const has=scVal!=='';
           const p=passOf(item,has?Number(scVal):null);
@@ -1482,7 +1511,7 @@ function renderStuToday(ct,mc){
           </div>`;
         }
         if(item.type==='rate'){
-          const r=Number((sd.itemRate||{})[i]||0);
+          const r=Number(pickState(sd.itemRate,it,i)||0);
           return `<div class="ti ti-wide s-${status}">
             <div class="ti-num">${i+1}</div>
             <div class="ti-body">
@@ -1585,10 +1614,13 @@ function cycleStatus(idx){
   const mc=getMonthCfg(curStuMk);const dk=curStuDk||todayKey();
   const sd=getStuData(mc.key,dk,curStudent);
   if(!sd.itemStatus)sd.itemStatus={};
-  const cur=sd.itemStatus[idx]||'none';
-  sd.itemStatus[idx]=cur==='none'?'wip':cur==='wip'?'done':cur==='done'?'fail':'none';
   const day=getDayData(mc.key,dk);
-  recomputeDone(sd,parseItems(effTask(day,sd,curStudent)));
+  const its=parseItems(effTask(day,sd,curStudent));
+  const it=its[idx];if(!it)return;
+  const cur=itemState(sd,idx,it);
+  sd.itemStatus[it.key]=cur==='none'?'wip':cur==='wip'?'done':cur==='done'?'fail':'none';
+  if(sd.itemStatus[idx]!==undefined)delete sd.itemStatus[idx];
+  recomputeDone(sd,its);
   const sy=window.scrollY;const taVals=collectTaValues();
   pushStu(mc.key,dk,curStudent);renderStudent();buildHomeGrid();
   requestAnimationFrame(()=>requestAnimationFrame(()=>{window.scrollTo(0,sy);restoreTaValues(taVals);setTimeout(()=>window.scrollTo(0,sy),120);}));
@@ -1597,9 +1629,12 @@ function setItemScore(idx,val){
   const mc=getMonthCfg(curStuMk);const dk=curStuDk||todayKey();
   const sd=getStuData(mc.key,dk,curStudent);
   if(!sd.itemScore)sd.itemScore={};
-  if(val===''||val===null){delete sd.itemScore[idx];}else{sd.itemScore[idx]=Number(val);}
   const day=getDayData(mc.key,dk);
-  recomputeDone(sd,parseItems(effTask(day,sd,curStudent)));
+  const its=parseItems(effTask(day,sd,curStudent));
+  const it=its[idx];if(!it)return;
+  if(sd.itemScore[idx]!==undefined)delete sd.itemScore[idx];
+  if(val===''||val===null){delete sd.itemScore[it.key];}else{sd.itemScore[it.key]=Number(val);}
+  recomputeDone(sd,its);
   const sy=window.scrollY;const taVals=collectTaValues();
   pushStu(mc.key,dk,curStudent);renderStudent();buildHomeGrid();
   requestAnimationFrame(()=>requestAnimationFrame(()=>{window.scrollTo(0,sy);restoreTaValues(taVals);setTimeout(()=>window.scrollTo(0,sy),120);}));
@@ -1608,9 +1643,12 @@ function setItemRate(idx,val){
   const mc=getMonthCfg(curStuMk);const dk=curStuDk||todayKey();
   const sd=getStuData(mc.key,dk,curStudent);
   if(!sd.itemRate)sd.itemRate={};
-  sd.itemRate[idx]=Number(val)||0;
   const day=getDayData(mc.key,dk);
-  recomputeDone(sd,parseItems(effTask(day,sd,curStudent)));
+  const its=parseItems(effTask(day,sd,curStudent));
+  const it=its[idx];if(!it)return;
+  if(sd.itemRate[idx]!==undefined)delete sd.itemRate[idx];
+  sd.itemRate[it.key]=Number(val)||0;
+  recomputeDone(sd,its);
   const sy=window.scrollY;const taVals=collectTaValues();
   pushStu(mc.key,dk,curStudent);renderStudent();buildHomeGrid();
   requestAnimationFrame(()=>requestAnimationFrame(()=>{window.scrollTo(0,sy);restoreTaValues(taVals);setTimeout(()=>window.scrollTo(0,sy),120);}));
