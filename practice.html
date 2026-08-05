@@ -152,7 +152,7 @@ function examName(y,g,m){
 }
 
 /* ═══════ 상태 ═══════ */
-let students = [], attempts = [], tags = {};
+let students = [], attempts = [], tags = {}, cuts = {};
 let me = null;            // 로그인한 학생 (null이면 교사)
 let isAdmin = false;
 let view = "home", tab = "", chart = null;
@@ -190,6 +190,7 @@ function initFirebase(cb){
     students = d.students || [];
     attempts = d.attempts || [];
     tags = d.tags || {};
+    cuts = d.cuts || {};
     // 최초 1회: 명단이 비어 있으면 기본 명단 등록
     if(!students.length && !seeded){
       seeded = true;
@@ -205,7 +206,7 @@ function initFirebase(cb){
 function persist(){
   if(!dbRef) return;
   _selfWrite = Date.now();
-  dbRef.update({students, attempts, tags, savedAt:Date.now()})
+  dbRef.update({students, attempts, tags, cuts, savedAt:Date.now()})
     .catch(()=> setStatus("● 저장 실패 — 인터넷 확인","#E8A33D"));
 }
 function toast(m){
@@ -278,7 +279,7 @@ function enterApp(){
 function renderTabs(){
   const t = document.getElementById("tabs");
   const list = isAdmin
-    ? [["all","전체 기록"],["ana","오답 분석"],["stu","학생·PIN"]]
+    ? [["all","전체 기록"],["ana","오답 분석"],["cut","등급컷"],["stu","학생·PIN"]]
     : [["mine","내 기록"],["myana","내 오답"]];
   t.innerHTML = list.map(([k,l])=>
     `<button class="tab${k===tab?" on":""}" onclick="switchTab('${k}')">${l}</button>`).join("");
@@ -309,10 +310,12 @@ function render(){
   if(chart){ chart.destroy(); chart=null; }
   if(view==="add") return renderAdd(m);
   if(view==="detail") return renderDetail(m);
+  if(view==="cutEdit") return renderCutEdit(m);
   if(tab==="mine") return renderMine(m);
   if(tab==="myana") return renderMyAna(m);
   if(tab==="all") return renderAll(m);
   if(tab==="ana") return renderAna(m);
+  if(tab==="cut") return renderCut(m);
   if(tab==="stu") return renderStu(m);
 }
 
@@ -344,6 +347,7 @@ function renderMine(m){
           <div class="badge" style="background:#F1F5F9;color:#46586C">${a.tryNo}차</div>
           <div style="flex:1;font-size:12.5px;color:#8A99AB">${esc(a.date)}</div>
           <div style="font-size:13px;font-weight:700">틀린 ${(a.wrong||[]).length}개</div>
+          ${gradeOf(a)?`<span class="badge" style="background:${gradeColor(gradeOf(a))}1A;color:${gradeColor(gradeOf(a))};border:1.3px solid ${gradeColor(gradeOf(a))}">${gradeOf(a)}등급</span>`:""}
           <div style="font-weight:800;font-size:15px;color:${rateOf(a)>=90?'#2f9d76':(rateOf(a)>=70?'#b07f38':'#c65f5f')}">${rateOf(a)}%</div>
         </div>`).join("")}
     </div>`;
@@ -476,7 +480,7 @@ function renderDetail(m){
       <div class="sbox"><span>틀린 개수</span><b style="color:#c65f5f">${wrong.length}</b></div>
       <div class="sbox"><span>정답률</span><b>${rateOf(a)}%</b></div>
     </div>
-    ${a.raw?`<div class="hint" style="text-align:right">원점수 ${esc(a.raw)}점</div>`:""}
+    ${a.raw?`<div class="hint" style="text-align:right">원점수 ${esc(a.raw)}점${gradeOf(a)?` · <b style="color:${gradeColor(gradeOf(a))}">${gradeOf(a)}등급</b>`:` · ${esc(gradeNote(a))}`}</div>`:""}
     ${canEdit?`<div style="margin-top:12px">
       <button class="btn-ghost" onclick="ST.edit=${ST.edit?"false":"true"};render()">
         ${ST.edit?"✕ 수정 그만두기":"✎ 채점 결과 고치기"}</button></div>`:""}
@@ -537,6 +541,156 @@ function editField(id,f,v){
 function saveEdit(){
   persist(); ST.edit = false; render();
   toast("수정 저장됨");
+}
+
+/* ═══════ 등급 판정 ═══════ */
+// 절대평가 과목은 교육과정 고시 기준으로 등급컷 입력 없이 자동 판정
+const ABS_GRADE = {
+  "영어":  [90,80,70,60,50,40,30,20],
+  "한국사":[40,35,30,25,20,15,10,5]
+};
+function cutKey(a){ return `${a.year}_${a.examGrade}_${a.month}`; }
+// 원점수 → 등급. 판정 불가면 null
+// 입력된 등급컷 범위를 벗어나면 단정하지 않는다 (1등급컷만 있는데 9등급이라 하지 않기 위함)
+function gradeOf(a){
+  if(a.raw === "" || a.raw == null) return null;
+  const r = parseFloat(a.raw);
+  if(isNaN(r)) return null;
+  const abs = ABS_GRADE[a.subject];
+  const arr = abs || ((cuts[cutKey(a)]||{})[a.subject]||{}).cuts;
+  if(!Array.isArray(arr)) return null;
+  for(let i=0;i<arr.length;i++){
+    const v = parseFloat(arr[i]);
+    if(!isNaN(v) && r >= v) return i+1;
+  }
+  // 어떤 컷에도 못 미친 경우: 8개 컷이 모두 채워져 있을 때만 최하 등급으로 확정
+  const allFilled = arr.length>=8 && arr.slice(0,8).every(v=>v!=null && v!=="" && !isNaN(parseFloat(v)));
+  return allFilled ? 9 : null;
+}
+// 부분 입력 상태에서 "몇 등급 아래"인지만 알려주는 보조 표시
+function gradeNote(a){
+  if(gradeOf(a) != null) return "";
+  if(a.raw === "" || a.raw == null) return "";
+  const arr = ABS_GRADE[a.subject] || ((cuts[cutKey(a)]||{})[a.subject]||{}).cuts;
+  if(!Array.isArray(arr)) return "등급컷 미등록";
+  let last = 0;
+  arr.forEach((v,i)=>{ if(v!=null && v!=="" && !isNaN(parseFloat(v))) last = i+1; });
+  return last ? `${last}등급 미만` : "등급컷 미등록";
+}
+function gradeColor(g){
+  if(!g) return "#8A99AB";
+  if(g<=2) return "#2f9d76";
+  if(g<=4) return "#5F87AC";
+  if(g<=6) return "#b07f38";
+  return "#c65f5f";
+}
+
+/* ── 교사: 등급컷 관리 ── */
+function renderCut(m){
+  const keys = [...new Set(attempts.map(cutKey))].sort().reverse();
+  let h = `<div class="card">
+    <div class="sec">모의고사 등급컷</div>
+    <div class="hint">회차마다 한 번만 넣으면 그 시험을 푼 학생 전원에게 자동 적용된다.<br>
+    학생이 <b>원점수</b>를 적어야 등급이 나온다. 문항 O/X로 나오는 정답률은 배점이 반영되지 않아 등급 계산에 쓸 수 없다.<br>
+    영어·한국사는 절대평가라 넣을 필요가 없다.</div>
+  </div>`;
+  if(!keys.length){
+    h += `<div class="card empty">아직 기록된 회차가 없다.<br>학생이 연습을 기록하면 여기 목록에 나타난다.</div>`;
+    m.innerHTML = h; return;
+  }
+  keys.forEach(k=>{
+    const [y,g,mo] = k.split("_");
+    const c = cuts[k] || {};
+    const done = Object.keys(c).filter(s=>(c[s].cuts||[]).some(v=>v!=null&&v!=="")).length;
+    const n = attempts.filter(a=>cutKey(a)===k).length;
+    h += `<div class="card" style="cursor:pointer" onclick="openCut('${k}')">
+      <div class="rowline">
+        <div style="flex:1">
+          <div style="font-weight:800;font-size:15px">${esc(examName(+y,g,+mo))}</div>
+          <div class="hint" style="margin-top:2px;color:${done?'#2f9d76':'#8A99AB'}">
+            ${done?`등급컷 ${done}과목 등록됨`:"미등록 — 등급이 안 나온다"} · 연습 ${n}건</div>
+        </div>
+        <div style="color:#C9CFDA;font-size:20px">›</div>
+      </div>
+    </div>`;
+  });
+  m.innerHTML = h;
+}
+function openCut(k){ ST.cutKey=k; view="cutEdit"; render(); }
+
+function renderCutEdit(m){
+  const k = ST.cutKey;
+  const [y,g,mo] = k.split("_");
+  // 이 회차에서 실제로 기록된 과목만 보여준다
+  const used = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))]
+                 .filter(s=>!ABS_GRADE[s]);
+  const c = cuts[k] || {};
+  let h = `<button class="back" onclick="view='home';render()">‹ 등급컷 목록으로</button>
+  <div class="card">
+    <div style="font-weight:800;font-size:16px">${esc(examName(+y,g,+mo))}</div>
+    <div class="hint">각 등급의 <b>최저 원점수</b>를 넣는다. 1등급 85면 85점 이상이 1등급이다.<br>
+    아는 등급만 넣어도 된다. 빈 칸은 판정에서 건너뛴다.</div>
+  </div>
+
+  <div class="card">
+    <div class="sec">붙여넣기로 한 번에</div>
+    <div class="hint">한 줄에 과목 하나. 과목명 뒤에 1등급부터 순서대로 숫자를 쓰면 된다.</div>
+    <textarea id="cut-paste" rows="3" placeholder="국어 85 76 66 55 42 32 23 15&#10;수학 80 68 55 43 33 25 18 12"
+      style="font-family:ui-monospace,monospace;font-size:13px"></textarea>
+    <div style="margin-top:8px"><button class="btn-ghost" onclick="applyCutPaste()">표에 채우기</button></div>
+  </div>`;
+
+  used.forEach(sub=>{
+    const cl = (c[sub]||{}).cuts || [];
+    h += `<div class="card">
+      <div class="sec">${esc(sub)}</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:8px">
+        ${[1,2,3,4,5,6,7,8].map(i=>`
+          <div>
+            <div style="font-size:11px;font-weight:700;color:#8A99AB;text-align:center">${i}등급</div>
+            <input id="cut-${sub}-${i}" type="number" inputmode="numeric" value="${cl[i-1]??""}"
+              style="margin-top:3px;padding:9px 4px;text-align:center;font-size:14px">
+          </div>`).join("")}
+      </div>
+    </div>`;
+  });
+  h += `<button class="btn" onclick="saveCuts()">등급컷 저장</button>`;
+  m.innerHTML = h;
+}
+function applyCutPaste(){
+  const raw = document.getElementById("cut-paste").value;
+  if(!raw.trim()) return toast("붙여넣을 내용이 없다");
+  const k = ST.cutKey;
+  const used = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))].filter(s=>!ABS_GRADE[s]);
+  let filled=0;
+  raw.split(/\n/).forEach(line=>{
+    if(!line.trim()) return;
+    const sub = used.find(s=>line.includes(s));
+    if(!sub) return;
+    const nums = (line.match(/\d+(?:\.\d+)?/g)||[]).map(Number);
+    for(let i=1;i<=8;i++){
+      const el = document.getElementById(`cut-${sub}-${i}`);
+      if(el) el.value = nums[i-1]!=null ? nums[i-1] : "";
+    }
+    filled++;
+  });
+  toast(filled? `${filled}과목 채웠다 — 아래 저장을 눌러야 반영된다` : "과목명을 못 찾았다");
+}
+function saveCuts(){
+  const k = ST.cutKey;
+  const used = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))].filter(s=>!ABS_GRADE[s]);
+  const obj = {};
+  used.forEach(sub=>{
+    const cl = [1,2,3,4,5,6,7,8].map(i=>{
+      const el = document.getElementById(`cut-${sub}-${i}`);
+      const v = el ? el.value : "";
+      return v==="" ? null : parseFloat(v);
+    });
+    if(cl.some(v=>v!=null)) obj[sub] = { cuts: cl };
+  });
+  cuts[k] = obj;
+  persist(); view="home"; render();
+  toast("저장 완료 — 이 회차 전원에게 적용된다");
 }
 
 function saveTag(key,q,v){
