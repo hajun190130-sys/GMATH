@@ -325,14 +325,50 @@ function renderMine(m){
   let html = `<button class="btn" onclick="openAdd()">+ 새 연습 기록하기</button>`;
   if(!list.length){
     html += `<div class="card empty">아직 기록이 없다.<br>기출을 풀고 위 버튼으로 채점 결과를 남기면 된다.</div>`;
+    m.innerHTML = html; return;
   }
+
+  // ── 성장 요약 ──
+  const graded = list.filter(a=>gradeOf(a)!=null).sort((a,b)=> a.date>b.date?1:-1);
+  if(graded.length){
+    const last = graded[graded.length-1];
+    const g = gradeOf(last), col = gradeColor(g);
+    const first = graded[0], gf = gradeOf(first);
+    const up = gf - g;   // 등급은 낮을수록 좋다
+    html += `<div class="card" style="text-align:center;padding:22px 16px">
+      <div style="font-size:12px;font-weight:700;color:#8A99AB;letter-spacing:.06em">최근 등급</div>
+      <div style="font-size:60px;font-weight:800;line-height:1.05;color:${col};margin-top:4px">${g}</div>
+      <div style="font-size:13px;font-weight:700;color:${col}">등급</div>
+      <div class="hint" style="margin-top:8px">${esc(last.subject)} · ${esc(examName(last.year,last.examGrade,last.month))}</div>
+      ${graded.length>1?`<div style="margin-top:12px;display:inline-block;padding:7px 14px;border-radius:20px;
+        background:${up>0?'rgba(47,157,118,.14)':(up<0?'rgba(198,95,95,.14)':'#F1F5F9')};
+        color:${up>0?'#2f9d76':(up<0?'#c65f5f':'#46586C')};font-size:13px;font-weight:800">
+        처음 ${gf}등급 → 지금 ${g}등급 ${up>0?`· ${up}등급 올랐다`:(up<0?`· ${-up}등급 내려갔다`:"· 그대로")}</div>`:""}
+    </div>`;
+  } else {
+    html += `<div class="card">
+      <div class="sec">등급이 아직 안 나온다</div>
+      <div class="hint">선생님이 그 시험의 등급컷을 넣으면 등급이 자동으로 뜬다. 조금만 기다리면 된다.</div>
+    </div>`;
+  }
+
+  // ── 성장 그래프 ──
+  if(graded.length>=2 || list.length>=2){
+    html += `<div class="card">
+      <div class="sec">성장 그래프</div>
+      <canvas id="growth" height="220"></canvas>
+      <div class="hint">위로 갈수록 잘한 것이다. 선이 올라가면 실력이 오르고 있다는 뜻이다.</div>
+    </div>`;
+  }
+
   // 회차별 그룹 (반복 연습 비교)
   const groups = {};
   list.forEach(a=>{ const k=attemptKey(a); (groups[k]=groups[k]||[]).push(a); });
   Object.entries(groups).forEach(([k,arr])=>{
     arr.sort((a,b)=> a.tryNo-b.tryNo);
     const first = arr[0], last = arr[arr.length-1];
-    const diff = arr.length>1 ? rateOf(last)-rateOf(first) : null;
+    const rl = rawOf(last), rf = rawOf(first);
+    const diff = (arr.length>1 && rl!=null && rf!=null) ? rl-rf : null;
     html += `<div class="card">
       <div class="rowline">
         <div style="flex:1">
@@ -340,19 +376,48 @@ function renderMine(m){
           <div class="hint" style="margin-top:2px">${arr.length}회 연습</div>
         </div>
         ${diff!=null?`<span class="badge" style="background:${diff>=0?'rgba(47,157,118,.15)':'rgba(198,95,95,.15)'};color:${diff>=0?'#2f9d76':'#c65f5f'}">
-          ${diff>=0?'+':''}${diff}%p</span>`:""}
+          ${diff>=0?'+':''}${diff}점</span>`:""}
       </div>
       ${arr.map(a=>`
         <div class="rowline" style="margin-top:10px;cursor:pointer" onclick="openDetail('${a.id}')">
           <div class="badge" style="background:#F1F5F9;color:#46586C">${a.tryNo}차</div>
           <div style="flex:1;font-size:12.5px;color:#8A99AB">${esc(a.date)}</div>
-          <div style="font-size:13px;font-weight:700">틀린 ${(a.wrong||[]).length}개</div>
+          <div style="font-size:12px;color:#8A99AB">틀린 ${(a.wrong||[]).length}개</div>
+          ${stdOf(a)!=null?`<span class="badge" style="background:#F1F5F9;color:#46586C">표${stdOf(a)}</span>`:""}
           ${gradeOf(a)?`<span class="badge" style="background:${gradeColor(gradeOf(a))}1A;color:${gradeColor(gradeOf(a))};border:1.3px solid ${gradeColor(gradeOf(a))}">${gradeOf(a)}등급</span>`:""}
-          <div style="font-weight:800;font-size:15px;color:${rateOf(a)>=90?'#2f9d76':(rateOf(a)>=70?'#b07f38':'#c65f5f')}">${rateOf(a)}%</div>
+          <div style="font-weight:800;font-size:17px;min-width:52px;text-align:right">${rawOf(a)!=null?rawOf(a)+"<span style='font-size:12px;font-weight:600'>점</span>":"<span style='font-size:11px;color:#c65f5f'>점수없음</span>"}</div>
         </div>`).join("")}
     </div>`;
   });
   m.innerHTML = html;
+  drawGrowth(list);
+}
+
+// 등급이 있으면 등급 추이, 없으면 정답률 추이를 그린다
+function drawGrowth(list){
+  const el = document.getElementById("growth");
+  if(!el) return;
+  const arr = list.slice().sort((a,b)=> a.date>b.date?1:-1);
+  const labels = arr.map(a=>`${String(a.year).slice(2)}·${a.month}월 ${a.subject}`);
+  const grades = arr.map(a=>gradeOf(a));
+  const hasGrade = grades.some(g=>g!=null);
+  const ds = hasGrade
+    ? [{ label:"등급", data:grades, borderColor:"#5F87AC", backgroundColor:"#5F87AC",
+         tension:.3, spanGaps:true, pointRadius:5, borderWidth:3 }]
+    : [{ label:"원점수", data:arr.map(a=>rawOf(a)), borderColor:"#2f9d76", backgroundColor:"#2f9d76",
+         tension:.3, spanGaps:true, pointRadius:5, borderWidth:3 }];
+  chart = new Chart(el, {
+    type:"line", data:{ labels, datasets:ds },
+    options:{ responsive:true,
+      scales:{ y: hasGrade
+        ? { reverse:true, min:1, max:9, ticks:{ stepSize:1, font:{size:12},
+            callback:v=>v+"등급" } }
+        : { min:0, max:100, ticks:{ font:{size:12}, callback:v=>v+"점" } },
+        x:{ ticks:{ font:{size:10}, maxRotation:30 } } },
+      plugins:{ legend:{ display:false },
+        tooltip:{ callbacks:{ title:i=>examName(arr[i[0].dataIndex].year, arr[i[0].dataIndex].examGrade, arr[i[0].dataIndex].month),
+          label:c=> hasGrade ? `${c.parsed.y}등급` : `${c.parsed.y}점` } } } }
+  });
 }
 
 /* ── 새 기록 입력 (매쓰플랫식) ── */
@@ -417,15 +482,37 @@ function renderAdd(m){
     <div class="summary">
       <div class="sbox"><span>맞은 개수</span><b style="color:#2f9d76">${qn-wrongN}</b></div>
       <div class="sbox"><span>틀린 개수</span><b style="color:#c65f5f">${wrongN}</b></div>
-      <div class="sbox"><span>정답률</span><b>${rate}%</b></div>
+      <div class="sbox"><span>원점수</span><b>${liveRaw()}</b></div>
     </div>
-    <label>원점수 (선택)</label>
+    <label style="font-size:13px">원점수${autoRawNow()!=null?" (배점표로 자동 계산됨)":""}</label>
     <input type="number" inputmode="numeric" placeholder="배점 반영한 실제 점수" value="${ST.raw}"
-      onchange="ST.raw=this.value">
-    <div class="hint">모의고사는 문항마다 배점이 달라 정답률과 원점수가 다르다. 성적표 점수를 알면 적어두면 된다.</div>
+      onchange="ST.raw=this.value;render()" ${autoRawNow()!=null?'style="background:#F1F5F9"':''}>
+    <div class="hint">${autoRawNow()!=null
+      ? "선생님이 배점표를 넣어둬서 원점수가 자동으로 계산된다. 성적표 점수와 다르면 여기에 직접 적으면 그 값이 우선한다."
+      : "<b>반드시 적어야 한다.</b> 문항마다 배점이 달라 맞은 개수만으로는 점수를 알 수 없다."}</div>
   </div>
 
   <button class="btn" onclick="saveAttempt()">저장하기</button>`;
+}
+// 입력 중인 회차의 배점표로 계산되는 원점수 (없으면 null)
+function autoRawNow(){
+  if(!ST.month) return null;
+  const key = `${ST.year}_${ST.examGrade}_${ST.month}`;
+  const cfg = (cuts[key]||{})[ST.subject] || {};
+  const p3 = cfg.p3||[], p4 = cfg.p4||[];
+  if(!p3.length && !p4.length) return null;
+  const qn = SUBJECTS[ST.subject]?.q || 30;
+  let sum = 0;
+  for(let q=1;q<=qn;q++){
+    if(ST.wrong.includes(q)) continue;
+    sum += p4.includes(q) ? 4 : (p3.includes(q) ? 3 : 2);
+  }
+  return sum;
+}
+function liveRaw(){
+  if(ST.raw !== "" && ST.raw != null) return ST.raw;
+  const a = autoRawNow();
+  return a != null ? a : "–";
 }
 function setSubj(s){ ST.subject=s; ST.wrong=[]; render(); }
 function setEG(g){ ST.examGrade=g; ST.month=null; render(); }
@@ -478,9 +565,12 @@ function renderDetail(m){
     <div class="summary">
       <div class="sbox"><span>맞은 개수</span><b style="color:#2f9d76">${qn-wrong.length}</b></div>
       <div class="sbox"><span>틀린 개수</span><b style="color:#c65f5f">${wrong.length}</b></div>
-      <div class="sbox"><span>정답률</span><b>${rateOf(a)}%</b></div>
+      <div class="sbox"><span>원점수</span><b>${rawOf(a)!=null?rawOf(a):"–"}</b></div>
     </div>
-    ${a.raw?`<div class="hint" style="text-align:right">원점수 ${esc(a.raw)}점${gradeOf(a)?` · <b style="color:${gradeColor(gradeOf(a))}">${gradeOf(a)}등급</b>`:` · ${esc(gradeNote(a))}`}</div>`:""}
+    ${rawOf(a)!=null?`<div style="text-align:right;margin-top:8px;font-size:13px">
+      원점수 <b>${rawOf(a)}점</b>${autoScored(a)?`<span class="hint" style="display:inline"> (배점 자동)</span>`:""}
+      ${gradeOf(a)?` · <b style="color:${gradeColor(gradeOf(a))};font-size:15px">${gradeOf(a)}등급</b>`:` · <span class="hint" style="display:inline">${esc(gradeNote(a))}</span>`}</div>`
+    :`<div class="hint" style="text-align:right">원점수가 없어 등급이 안 나온다</div>`}
     ${canEdit?`<div style="margin-top:12px">
       <button class="btn-ghost" onclick="ST.edit=${ST.edit?"false":"true"};render()">
         ${ST.edit?"✕ 수정 그만두기":"✎ 채점 결과 고치기"}</button></div>`:""}
@@ -553,9 +643,8 @@ function cutKey(a){ return `${a.year}_${a.examGrade}_${a.month}`; }
 // 원점수 → 등급. 판정 불가면 null
 // 입력된 등급컷 범위를 벗어나면 단정하지 않는다 (1등급컷만 있는데 9등급이라 하지 않기 위함)
 function gradeOf(a){
-  if(a.raw === "" || a.raw == null) return null;
-  const r = parseFloat(a.raw);
-  if(isNaN(r)) return null;
+  const r = rawOf(a);
+  if(r == null || isNaN(r)) return null;
   const abs = ABS_GRADE[a.subject];
   const arr = abs || ((cuts[cutKey(a)]||{})[a.subject]||{}).cuts;
   if(!Array.isArray(arr)) return null;
@@ -570,12 +659,53 @@ function gradeOf(a){
 // 부분 입력 상태에서 "몇 등급 아래"인지만 알려주는 보조 표시
 function gradeNote(a){
   if(gradeOf(a) != null) return "";
-  if(a.raw === "" || a.raw == null) return "";
+  if(rawOf(a) == null) return "원점수 없음";
   const arr = ABS_GRADE[a.subject] || ((cuts[cutKey(a)]||{})[a.subject]||{}).cuts;
   if(!Array.isArray(arr)) return "등급컷 미등록";
   let last = 0;
   arr.forEach((v,i)=>{ if(v!=null && v!=="" && !isNaN(parseFloat(v))) last = i+1; });
   return last ? `${last}등급 미만` : "등급컷 미등록";
+}
+// 배점표(3점·4점 문항)로 원점수 자동 계산. 배점표가 없으면 학생이 적은 원점수 사용
+function rawOf(a){
+  const cfg = (cuts[cutKey(a)]||{})[a.subject] || {};
+  const p3 = cfg.p3 || [], p4 = cfg.p4 || [];
+  if(!p3.length && !p4.length){
+    return (a.raw==="" || a.raw==null) ? null : parseFloat(a.raw);
+  }
+  const qn = a.total || 30, wrong = a.wrong || [];
+  let sum = 0;
+  for(let q=1;q<=qn;q++){
+    if(wrong.includes(q)) continue;
+    sum += p4.includes(q) ? 4 : (p3.includes(q) ? 3 : 2);
+  }
+  return sum;
+}
+// 표준점수 = 계수×(원점수−평균)/표준편차 + 기준점 (국·수 20/100, 탐구 10/50)
+const STD_COEF = { "국어":[20,100], "수학":[20,100], "영어":[20,100],
+                   "통합사회":[10,50], "통합과학":[10,50], "사회":[10,50], "과학":[10,50] };
+function stdOf(a){
+  const cfg = (cuts[cutKey(a)]||{})[a.subject] || {};
+  const coef = STD_COEF[a.subject];
+  const r = rawOf(a);
+  if(!coef || r==null) return null;
+  const mean = parseFloat(cfg.mean), sd = parseFloat(cfg.sd);
+  if(isNaN(mean) || isNaN(sd) || sd === 0) return null;
+  return Math.round(coef[0]*(r-mean)/sd + coef[1]);
+}
+// 화면에 쓸 점수 문자열: 원점수를 항상 앞세운다
+function scoreText(a){
+  const r = rawOf(a);
+  if(r == null) return "원점수 미입력";
+  const st = stdOf(a), g = gradeOf(a);
+  let t = `${r}점`;
+  if(st != null) t += ` · 표${st}`;
+  if(g != null) t += ` · ${g}등급`;
+  return t;
+}
+function autoScored(a){
+  const cfg = (cuts[cutKey(a)]||{})[a.subject] || {};
+  return (cfg.p3||[]).length>0 || (cfg.p4||[]).length>0;
 }
 function gradeColor(g){
   if(!g) return "#8A99AB";
@@ -641,9 +771,25 @@ function renderCutEdit(m){
   </div>`;
 
   used.forEach(sub=>{
-    const cl = (c[sub]||{}).cuts || [];
+    const cfg = c[sub] || {};
+    const cl = cfg.cuts || [];
+    const qn = SUBJECTS[sub]?.q || 30;
+    const p3 = (cfg.p3||[]).join(","), p4 = (cfg.p4||[]).join(",");
     h += `<div class="card">
-      <div class="sec">${esc(sub)}</div>
+      <div class="sec">${esc(sub)} <span style="font-weight:600;color:#8A99AB;font-size:12px">· ${qn}문항</span></div>
+
+      <div style="background:#F8FAFC;border-radius:9px;padding:12px;margin-top:8px">
+        <div style="font-size:12.5px;font-weight:800">배점표 — 넣으면 원점수가 자동 계산된다</div>
+        <div class="hint">시험지를 보고 3점·4점 문항 번호만 적으면 된다. 나머지는 2점으로 계산한다.<br>
+        이걸 넣으면 학생이 O/X만 찍어도 원점수와 등급이 바로 나온다.</div>
+        <label style="margin-top:10px">3점 문항</label>
+        <input id="p3-${sub}" value="${esc(p3)}" placeholder="예: 5,9,12,20,27">
+        <label>4점 문항</label>
+        <input id="p4-${sub}" value="${esc(p4)}" placeholder="예: 21,22,29,30">
+        <div class="hint" id="tot-${sub}"></div>
+      </div>
+
+      <div style="font-size:12.5px;font-weight:800;margin-top:14px">등급컷 (최저 원점수)</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:8px">
         ${[1,2,3,4,5,6,7,8].map(i=>`
           <div>
@@ -651,6 +797,17 @@ function renderCutEdit(m){
             <input id="cut-${sub}-${i}" type="number" inputmode="numeric" value="${cl[i-1]??""}"
               style="margin-top:3px;padding:9px 4px;text-align:center;font-size:14px">
           </div>`).join("")}
+      </div>
+      <div class="hint">9등급은 8등급컷 미만이라 따로 넣지 않는다.</div>
+
+      <div style="font-size:12.5px;font-weight:800;margin-top:16px">표준점수 계산용</div>
+      <div class="hint">전체 평균과 표준편차를 넣으면 표준점수가 자동으로 나온다.
+      ${STD_COEF[sub] ? `${sub}는 ${STD_COEF[sub][0]}×(원점수−평균)÷표준편차+${STD_COEF[sub][1]} 로 계산된다.` : ""}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div><div style="font-size:11px;font-weight:700;color:#8A99AB">평균</div>
+          <input id="mean-${sub}" type="number" step="0.01" value="${cfg.mean??""}" placeholder="예: 49.2" style="margin-top:3px"></div>
+        <div><div style="font-size:11px;font-weight:700;color:#8A99AB">표준편차</div>
+          <input id="sd-${sub}" type="number" step="0.01" value="${cfg.sd??""}" placeholder="예: 21.5" style="margin-top:3px"></div>
       </div>
     </div>`;
   });
@@ -676,18 +833,36 @@ function applyCutPaste(){
   });
   toast(filled? `${filled}과목 채웠다 — 아래 저장을 눌러야 반영된다` : "과목명을 못 찾았다");
 }
+function parseNums(v, max){
+  return [...new Set(String(v||"").split(/[,\s]+/).map(x=>parseInt(x))
+    .filter(n=>!isNaN(n) && n>=1 && n<=max))].sort((a,b)=>a-b);
+}
 function saveCuts(){
   const k = ST.cutKey;
   const used = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))].filter(s=>!ABS_GRADE[s]);
   const obj = {};
+  const warn = [];
   used.forEach(sub=>{
+    const qn = SUBJECTS[sub]?.q || 30;
     const cl = [1,2,3,4,5,6,7,8].map(i=>{
       const el = document.getElementById(`cut-${sub}-${i}`);
       const v = el ? el.value : "";
       return v==="" ? null : parseFloat(v);
     });
-    if(cl.some(v=>v!=null)) obj[sub] = { cuts: cl };
+    const p3 = parseNums((document.getElementById("p3-"+sub)||{}).value, qn);
+    const p4 = parseNums((document.getElementById("p4-"+sub)||{}).value, qn);
+    const dup = p3.filter(q=>p4.includes(q));
+    if(dup.length) warn.push(`${sub}: ${dup.join(",")}번이 3점과 4점에 겹친다`);
+    const total = (qn - p3.length - p4.length)*2 + p3.length*3 + p4.length*4;
+    if((p3.length||p4.length) && total !== 100) warn.push(`${sub}: 배점 합이 ${total}점이다 (보통 100점)`);
+    const mv = (document.getElementById("mean-"+sub)||{}).value;
+    const sv = (document.getElementById("sd-"+sub)||{}).value;
+    const mean = (mv===""||mv==null)?null:parseFloat(mv);
+    const sd   = (sv===""||sv==null)?null:parseFloat(sv);
+    if(cl.some(v=>v!=null) || p3.length || p4.length || mean!=null || sd!=null)
+      obj[sub] = { cuts: cl, p3, p4, mean, sd };
   });
+  if(warn.length && !confirm(warn.join("\n") + "\n\n그래도 저장할까?")) return;
   cuts[k] = obj;
   persist(); view="home"; render();
   toast("저장 완료 — 이 회차 전원에게 적용된다");
@@ -737,16 +912,16 @@ function anaHtml(sid){
 
   Object.entries(bySubj).forEach(([s,arr])=>{
     arr.sort((x,y)=> x.date>y.date?1:-1);
-    const first=rateOf(arr[0]), last=rateOf(arr[arr.length-1]);
+    const first=rawOf(arr[0]), last=rawOf(arr[arr.length-1]);
     const d=last-first;
     const open = ST.openSubj===s;
     h += `<div style="margin-top:14px;border-top:1px solid #EDF0F5;padding-top:10px">
       <div class="bar-row" style="cursor:pointer" onclick="toggleSubj('${s}')">
         <div class="bar-label">${esc(s)} <span style="color:#C9CFDA">${open?'▾':'▸'}</span></div>
-        <div class="bar-track"><div class="bar-fill" style="width:${last}%;background:${last>=90?'#2f9d76':(last>=70?'#b07f38':'#c65f5f')}"></div></div>
-        <div class="bar-num">${last}%</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${last||0}%;background:${last>=90?'#2f9d76':(last>=70?'#b07f38':'#c65f5f')}"></div></div>
+        <div class="bar-num">${last!=null?last+"점":"–"}</div>
       </div>
-      <div class="hint">${arr.length}회 · 처음 ${first}% → 최근 ${last}% (${d>=0?'+':''}${d}%p)</div>`;
+      <div class="hint">${arr.length}회${(first!=null&&last!=null)?` · 처음 ${first}점 → 최근 ${last}점 (${last-first>=0?'+':''}${last-first}점)`:""}</div>`;
 
     if(open){
       arr.slice().reverse().forEach(a=>{
@@ -757,7 +932,7 @@ function anaHtml(sid){
           <div class="rowline">
             <div style="flex:1;font-weight:700;font-size:13px">${esc(examName(a.year,a.examGrade,a.month))}</div>
             <div class="badge" style="background:#fff;color:#46586C;border:1px solid #E3E7EE">${a.tryNo}차</div>
-            <div style="font-weight:800;font-size:14px;color:${rateOf(a)>=90?'#2f9d76':(rateOf(a)>=70?'#b07f38':'#c65f5f')}">${rateOf(a)}%</div>
+            <div style="font-weight:800;font-size:15px">${rawOf(a)!=null?rawOf(a)+"점":"–"}</div>
           </div>
           <div class="hint" style="margin-top:1px">${esc(a.date)} · 틀린 ${wrong.length}개</div>
           <div class="qgrid mini">
@@ -832,13 +1007,13 @@ function renderAll(m){
           <div style="font-weight:800;font-size:15px">${esc(s.name)} <span style="font-weight:600;color:#8A99AB;font-size:12px">${esc(s.grade)}</span></div>
           <div class="hint" style="margin-top:2px">총 ${list.length}회 · 최근 ${esc(last.date)}</div>
         </div>
-        <div style="font-weight:800;font-size:16px;color:${rateOf(last)>=90?'#2f9d76':(rateOf(last)>=70?'#b07f38':'#c65f5f')}">${rateOf(last)}%</div>
+        <div style="font-weight:800;font-size:16px">${rawOf(last)!=null?rawOf(last)+"점":"–"}</div>
       </div>
       ${list.slice(0,4).map(a=>`
         <div class="rowline" style="margin-top:9px;cursor:pointer" onclick="openDetail('${a.id}')">
           <div class="badge" style="background:#F1F5F9;color:#46586C">${a.tryNo}차</div>
           <div style="flex:1;font-size:12.5px">${esc(a.subject)} · ${esc(examName(a.year,a.examGrade,a.month))}</div>
-          <div style="font-size:13px;font-weight:700">${rateOf(a)}%</div>
+          <div style="font-size:13.5px;font-weight:800">${scoreText(a)}</div>
         </div>`).join("")}
       ${list.length>4?`<div class="hint">외 ${list.length-4}건</div>`:""}
     </div>`;
