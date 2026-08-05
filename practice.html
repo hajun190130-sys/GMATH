@@ -46,6 +46,8 @@
   .pill.on{border:2px solid #5F87AC;background:#5F87AC;color:#fff}
   /* 문항 그리드 */
   .qgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(46px,1fr));gap:6px;margin-top:12px}
+  .qgrid.mini{grid-template-columns:repeat(auto-fill,minmax(30px,1fr));gap:4px;margin-top:10px}
+  .qgrid.mini .q{font-size:11px;border-width:1.2px;border-radius:6px}
   .q{aspect-ratio:1;border-radius:9px;border:1.6px solid #D5DAE2;background:#fff;
      display:flex;flex-direction:column;align-items:center;justify-content:center;
      font-weight:800;font-size:14px;color:#46586C;cursor:pointer;font-family:inherit;user-select:none}
@@ -554,60 +556,113 @@ function renderMyAna(m){ m.innerHTML = anaHtml(me.id); }
 function anaHtml(sid){
   const list = attempts.filter(a=>a.studentId===sid);
   if(!list.length) return `<div class="card empty">아직 기록이 없다.</div>`;
-  // 유형별 누적
-  const tagFreq = {}, qFreq = {};
+
+  // 유형별 누적 + 출처(어느 시험 몇 번인지)
+  const tagFreq = {}, tagSrc = {}, qFreq = {};
   list.forEach(a=>{
     const key = attemptKey(a);
     (a.wrong||[]).forEach(q=>{
       const t = tagOf(key,q);
-      if(t) tagFreq[t]=(tagFreq[t]||0)+1;
-      const label = `${a.subject} ${q}번`;
-      qFreq[label]=(qFreq[label]||0)+1;
+      if(t){
+        tagFreq[t]=(tagFreq[t]||0)+1;
+        (tagSrc[t]=tagSrc[t]||[]).push({
+          label:`${a.year}년 ${a.month}월 ${a.subject} ${q}번`, id:a.id, tryNo:a.tryNo });
+      }
+      qFreq[`${a.subject}|${a.year}|${a.month}|${q}`]=(qFreq[`${a.subject}|${a.year}|${a.month}|${q}`]||0)+1;
     });
   });
   const tagArr = Object.entries(tagFreq).map(([n,c])=>({n,c})).sort((a,b)=>b.c-a.c);
-  const repeat = Object.entries(qFreq).map(([n,c])=>({n,c})).filter(x=>x.c>=2).sort((a,b)=>b.c-a.c);
+  const repeat = Object.entries(qFreq).map(([k,c])=>({k,c})).filter(x=>x.c>=2).sort((a,b)=>b.c-a.c);
+
   const bySubj = {};
   list.forEach(a=>{ (bySubj[a.subject]=bySubj[a.subject]||[]).push(a); });
 
   let h = `<div class="card">
     <div class="sec">과목별 정답률 흐름</div>
-    ${Object.entries(bySubj).map(([s,arr])=>{
-      arr.sort((x,y)=> x.date>y.date?1:-1);
-      const first=rateOf(arr[0]), last=rateOf(arr[arr.length-1]);
-      const d=last-first;
-      return `<div class="bar-row">
-        <div class="bar-label">${esc(s)}</div>
+    <div class="hint">과목을 누르면 회차별로 몇 번을 틀렸는지 펼쳐진다.</div>`;
+
+  Object.entries(bySubj).forEach(([s,arr])=>{
+    arr.sort((x,y)=> x.date>y.date?1:-1);
+    const first=rateOf(arr[0]), last=rateOf(arr[arr.length-1]);
+    const d=last-first;
+    const open = ST.openSubj===s;
+    h += `<div style="margin-top:14px;border-top:1px solid #EDF0F5;padding-top:10px">
+      <div class="bar-row" style="cursor:pointer" onclick="toggleSubj('${s}')">
+        <div class="bar-label">${esc(s)} <span style="color:#C9CFDA">${open?'▾':'▸'}</span></div>
         <div class="bar-track"><div class="bar-fill" style="width:${last}%;background:${last>=90?'#2f9d76':(last>=70?'#b07f38':'#c65f5f')}"></div></div>
         <div class="bar-num">${last}%</div>
       </div>
-      <div class="hint" style="margin-left:0">${arr.length}회 · 처음 ${first}% → 최근 ${last}% (${d>=0?'+':''}${d}%p)</div>`;
-    }).join("")}
-  </div>`;
+      <div class="hint">${arr.length}회 · 처음 ${first}% → 최근 ${last}% (${d>=0?'+':''}${d}%p)</div>`;
 
+    if(open){
+      arr.slice().reverse().forEach(a=>{
+        const key = attemptKey(a);
+        const qn = a.total || 30;
+        const wrong = a.wrong || [];
+        h += `<div style="margin-top:14px;background:#F8FAFC;border-radius:10px;padding:12px">
+          <div class="rowline">
+            <div style="flex:1;font-weight:700;font-size:13px">${esc(examName(a.year,a.examGrade,a.month))}</div>
+            <div class="badge" style="background:#fff;color:#46586C;border:1px solid #E3E7EE">${a.tryNo}차</div>
+            <div style="font-weight:800;font-size:14px;color:${rateOf(a)>=90?'#2f9d76':(rateOf(a)>=70?'#b07f38':'#c65f5f')}">${rateOf(a)}%</div>
+          </div>
+          <div class="hint" style="margin-top:1px">${esc(a.date)} · 틀린 ${wrong.length}개</div>
+          <div class="qgrid mini">
+            ${Array.from({length:qn},(_,i)=>i+1).map(q=>{
+              const bad = wrong.includes(q);
+              return `<div class="q ${bad?'no':'ok'}"><span>${q}</span></div>`;
+            }).join("")}
+          </div>
+          ${wrong.length?`<div style="margin-top:10px;font-size:12px;line-height:1.9">
+            ${wrong.map(q=>{
+              const t = tagOf(key,q);
+              return `<span class="badge" style="background:rgba(198,95,95,.10);color:#a34848;margin-right:5px">
+                ${q}번${t?` · ${esc(t)}`:""}</span>`;
+            }).join("")}
+          </div>
+          <div style="margin-top:10px"><button class="btn-ghost btn-sm" onclick="openDetail('${a.id}')">이 회차 열기 · 유형 적기</button></div>`:""}
+        </div>`;
+      });
+    }
+    h += `</div>`;
+  });
+  h += `</div>`;
+
+  // 유형별 누적 — 출처 함께 표시
   if(tagArr.length){
     const mx = tagArr[0].c;
     h += `<div class="card"><div class="sec">반복되는 오답 유형</div>
-      ${tagArr.slice(0,8).map(t=>`<div class="bar-row">
-        <div class="bar-label">${esc(t.n)}</div>
-        <div class="bar-track"><div class="bar-fill" style="width:${Math.round(t.c/mx*100)}%;background:#c65f5f"></div></div>
-        <div class="bar-num">${t.c}회</div></div>`).join("")}
+      ${tagArr.slice(0,10).map(t=>`
+        <div style="margin-top:12px">
+          <div class="bar-row" style="margin-top:0">
+            <div class="bar-label">${esc(t.n)}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.round(t.c/mx*100)}%;background:#c65f5f"></div></div>
+            <div class="bar-num">${t.c}회</div>
+          </div>
+          <div style="font-size:11.5px;line-height:1.9;margin-top:3px">
+            ${(tagSrc[t.n]||[]).map(src=>`<span class="badge" style="background:#F1F5F9;color:#46586C;margin-right:4px;cursor:pointer"
+                onclick="openDetail('${src.id}')">${esc(src.label)}</span>`).join("")}
+          </div>
+        </div>`).join("")}
     </div>`;
   } else {
     h += `<div class="card"><div class="sec">반복되는 오답 유형</div>
-      <div class="hint">기록을 열어 오답마다 유형을 적으면 여기에 모인다.</div></div>`;
+      <div class="hint">위에서 과목을 펼친 뒤 회차를 열어 오답마다 유형을 적으면, 어느 시험 몇 번에서 나왔는지까지 여기에 모인다.</div></div>`;
   }
 
   if(repeat.length){
-    h += `<div class="card"><div class="sec">두 번 이상 틀린 문항</div>
-      <div style="font-size:13px;line-height:1.9;margin-top:4px">
-        ${repeat.slice(0,15).map(r=>`<span class="badge" style="background:rgba(198,95,95,.12);color:#c65f5f;margin-right:5px">${esc(r.n)} · ${r.c}회</span>`).join("")}
+    h += `<div class="card"><div class="sec">같은 문항을 두 번 이상 틀림</div>
+      <div style="font-size:12.5px;line-height:2;margin-top:4px">
+        ${repeat.slice(0,15).map(r=>{
+          const [subj,y,mo,q] = r.k.split("|");
+          return `<span class="badge" style="background:rgba(198,95,95,.12);color:#c65f5f;margin-right:5px">${esc(subj)} ${y}년 ${mo}월 ${q}번 · ${r.c}회</span>`;
+        }).join("")}
       </div>
-      <div class="hint">같은 문항을 반복해 틀린다면 개념이 아직 안 잡힌 것이다.</div>
+      <div class="hint">다시 풀어도 또 틀린 문항이다. 개념이 아직 안 잡힌 지점이다.</div>
     </div>`;
   }
   return h;
 }
+function toggleSubj(s){ ST.openSubj = (ST.openSubj===s) ? null : s; render(); }
 
 /* ── 교사: 전체 기록 ── */
 function renderAll(m){
