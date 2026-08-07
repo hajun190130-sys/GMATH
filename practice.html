@@ -385,6 +385,8 @@ function renderMine(m){
           <div style="font-size:12px;color:#8A99AB">틀린 ${(a.wrong||[]).length}개</div>
           ${stdOf(a)!=null?`<span class="badge" style="background:#F1F5F9;color:#46586C">표${stdOf(a)}</span>`:""}
           ${gradeOf(a)?`<span class="badge" style="background:${gradeColor(gradeOf(a))}1A;color:${gradeColor(gradeOf(a))};border:1.3px solid ${gradeColor(gradeOf(a))}">${gradeOf(a)}등급</span>`:""}
+          ${(rawOf(a)!=null && gradeOf(a)==null && !ABS_GRADE[a.subject])
+            ? `<span class="badge" style="background:rgba(232,163,61,.16);color:#a3701f">컷없음</span>`:""}
           <div style="font-weight:800;font-size:17px;min-width:52px;text-align:right">${rawOf(a)!=null?rawOf(a)+"<span style='font-size:12px;font-weight:600'>점</span>":"<span style='font-size:11px;color:#c65f5f'>점수없음</span>"}</div>
         </div>`).join("")}
     </div>`;
@@ -577,6 +579,24 @@ function renderDetail(m){
   </div>
 
   ${canEdit&&ST.edit?`<div class="card">
+    <div class="sec">시험 회차 고치기</div>
+    <div class="hint">학년이나 월을 잘못 골랐으면 여기서 바꾸면 된다. 회차가 맞아야 등급컷이 적용된다.</div>
+    <label>연도</label>
+    <select onchange="editExam('${a.id}','year',+this.value)">
+      ${(()=>{const ys=[];for(let y=thisYear;y>=thisYear-8;y--)ys.push(y);
+        return ys.map(y=>`<option value="${y}"${y===a.year?" selected":""}>${y}년</option>`).join("");})()}
+    </select>
+    <label>시험 학년</label>
+    <div class="pill-row">
+      ${EXAM_GRADES.map(g=>`<button class="pill${a.examGrade===g?" on":""}" onclick="editExam('${a.id}','examGrade','${g}')">${g}</button>`).join("")}
+    </div>
+    <label>회차</label>
+    <div class="pill-row">
+      ${EXAM_MONTHS[a.examGrade].map(mm=>`<button class="pill${a.month===mm?" on":""}" onclick="editExam('${a.id}','month',${mm})">${monthLabel(a.examGrade,mm)}</button>`).join("")}
+    </div>
+  </div>
+
+  <div class="card">
     <div class="sec">채점 고치기 — 번호를 눌러 O ↔ X</div>
     <div class="hint">고친 뒤 아래 저장을 눌러야 반영된다.</div>
     <div class="qgrid">
@@ -623,6 +643,21 @@ function editQ(id,q){
   if(i<0) a.wrong.push(q); else a.wrong.splice(i,1);
   a.wrong.sort((x,y)=>x-y);
   render();   // 저장은 '수정 저장' 버튼에서
+}
+// 시험 회차 변경 — 학년이 바뀌면 그 학년에 없는 월은 보정하고, 차수도 다시 계산한다
+function editExam(id,f,v){
+  const a = attempts.find(x=>x.id===id); if(!a) return;
+  a[f] = v;
+  if(f==="examGrade"){
+    const ms = EXAM_MONTHS[a.examGrade].map(x=>x);
+    if(!ms.includes(a.month)) a.month = ms[0];
+  }
+  // 같은 회차·과목의 기존 기록 수를 세어 차수 재부여
+  const sibs = attempts.filter(x=>x.id!==a.id && x.studentId===a.studentId
+    && x.year===a.year && x.examGrade===a.examGrade && x.month===a.month && x.subject===a.subject);
+  a.tryNo = sibs.length + 1;
+  a.examNameCache = null;
+  render();
 }
 function editField(id,f,v){
   const a = attempts.find(x=>x.id===id); if(!a) return;
@@ -1014,6 +1049,8 @@ function renderAll(m){
           <div class="badge" style="background:#F1F5F9;color:#46586C">${a.tryNo}차</div>
           <div style="flex:1;font-size:12.5px">${esc(a.subject)} · ${esc(examName(a.year,a.examGrade,a.month))}</div>
           <div style="font-size:13.5px;font-weight:800">${scoreText(a)}</div>
+          ${(rawOf(a)!=null && gradeOf(a)==null && !ABS_GRADE[a.subject])
+            ? `<span class="badge" style="background:rgba(232,163,61,.16);color:#a3701f;margin-left:5px">컷없음</span>`:""}
         </div>`).join("")}
       ${list.length>4?`<div class="hint">외 ${list.length-4}건</div>`:""}
     </div>`;
