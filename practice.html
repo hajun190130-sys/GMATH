@@ -21,7 +21,7 @@
   .title{font-size:19px;font-weight:800;margin-top:2px}
   .status{font-size:11px;font-weight:600;margin-top:3px;color:#8A99AB}
   .tabs{display:flex;gap:4px;margin-top:12px}
-  .tab{flex:1;background:none;border:none;color:#8A99AB;font-size:13px;font-weight:700;
+  .tab{flex:1;background:none;border:none;color:#8A99AB;font-size:12.5px;font-weight:700;
        padding:10px 0;cursor:pointer;font-family:inherit;border-bottom:2.5px solid transparent}
   .tab.on{color:#fff;border-bottom-color:#fff}
   .body{padding:16px}
@@ -185,29 +185,76 @@ function initFirebase(cb){
     clearTimeout(to); connected = true;
     setStatus("● 실시간 저장 중","#5CB87A");
     if(Date.now()-_selfWrite < 1500) return;
-    if(ST.edit) return;   // 채점 수정 중에는 서버 값으로 덮어쓰지 않는다
+    // 채점 수정 중이면 데이터도 화면도 건드리지 않는다 (편집 내용 보호)
+    if(ST.edit) return;
     const d = snap.val() || {};
-    students = d.students || [];
-    attempts = d.attempts || [];
+    // 기존 배열 구조와 새 객체 구조를 모두 읽는다 (누적 데이터 그대로 유지)
+    students = toList(d.students);
+    attempts = toList(d.attempts);
     tags = d.tags || {};
     cuts = d.cuts || {};
     // 최초 1회: 명단이 비어 있으면 기본 명단 등록
     if(!students.length && !seeded){
       seeded = true;
       students = DEFAULT_STUDENTS.map(s=>({id:uid(), ...s}));
-      persist();
+      persistAll();
     }
     if(me) me = students.find(s=>s.id===me.id) || me;
-    if(document.getElementById("app").style.display !== "none") render();
-    else renderGate();
+    // 입력 중인 화면은 다시 그리지 않는다 (다른 사람 저장 때문에 초기화되는 것 방지)
+    const busy = (view==="add" || view==="cutEdit" || view==="addStudent");
+    if(document.getElementById("app").style.display !== "none"){
+      if(!busy) render();
+    } else renderGate();
     cb&&cb();
   }, ()=>{ clearTimeout(to); setStatus("● 연결 오류 — 새로고침 필요","#E8A33D"); cb&&cb(); });
 }
-function persist(){
+// 배열이든 객체든 목록으로 변환
+function toList(v){
+  if(Array.isArray(v)) return v.filter(x=>x);
+  if(v && typeof v === "object") return Object.values(v).filter(x=>x);
+  return [];
+}
+function onErr(){ setStatus("● 저장 실패 — 인터넷 확인","#E8A33D"); }
+
+// 기록 하나만 저장 (다른 사람 기록을 건드리지 않는다)
+function saveAttempt_(a){
   if(!dbRef) return;
   _selfWrite = Date.now();
-  dbRef.update({students, attempts, tags, cuts, savedAt:Date.now()})
-    .catch(()=> setStatus("● 저장 실패 — 인터넷 확인","#E8A33D"));
+  dbRef.child("attempts").child(a.id).set(a).catch(onErr);
+}
+function removeAttempt_(id){
+  if(!dbRef) return;
+  _selfWrite = Date.now();
+  dbRef.child("attempts").child(id).remove().catch(onErr);
+}
+function saveStudent_(st){
+  if(!dbRef) return;
+  _selfWrite = Date.now();
+  dbRef.child("students").child(st.id).set(st).catch(onErr);
+}
+function removeStudent_(id){
+  if(!dbRef) return;
+  _selfWrite = Date.now();
+  dbRef.child("students").child(id).remove().catch(onErr);
+}
+function saveCuts_(key){
+  if(!dbRef) return;
+  _selfWrite = Date.now();
+  dbRef.child("cuts").child(key).set(cuts[key]||null).catch(onErr);
+}
+function saveTag_(key,q,val){
+  if(!dbRef) return;
+  _selfWrite = Date.now();
+  dbRef.child("tags").child(key).child(String(q)).set(val||null).catch(onErr);
+}
+// 최초 명단 등록 등 일괄 저장이 필요할 때만 사용
+function persistAll(){
+  if(!dbRef) return;
+  _selfWrite = Date.now();
+  const so={}, ao={};
+  students.forEach(x=>so[x.id]=x);
+  attempts.forEach(x=>ao[x.id]=x);
+  dbRef.update({students:so, attempts:ao, tags, cuts, savedAt:Date.now()}).catch(onErr);
 }
 function toast(m){
   const t=document.getElementById("toast");
@@ -279,7 +326,7 @@ function enterApp(){
 function renderTabs(){
   const t = document.getElementById("tabs");
   const list = isAdmin
-    ? [["all","전체 기록"],["ana","오답 분석"],["cut","등급컷"],["stu","학생·PIN"]]
+    ? [["all","기록"],["cmp","비교"],["ana","오답"],["cut","등급컷"],["stu","학생"]]
     : [["mine","내 기록"],["myana","내 오답"]];
   t.innerHTML = list.map(([k,l])=>
     `<button class="tab${k===tab?" on":""}" onclick="switchTab('${k}')">${l}</button>`).join("");
@@ -315,6 +362,7 @@ function render(){
   if(tab==="myana") return renderMyAna(m);
   if(tab==="all") return renderAll(m);
   if(tab==="ana") return renderAna(m);
+  if(tab==="cmp") return renderCmp(m);
   if(tab==="cut") return renderCut(m);
   if(tab==="stu") return renderStu(m);
 }
@@ -354,10 +402,19 @@ function renderMine(m){
 
   // ── 성장 그래프 ──
   if(graded.length>=2 || list.length>=2){
+    const byDate = ST.axis !== "exam";
     html += `<div class="card">
-      <div class="sec">성장 그래프</div>
-      <canvas id="growth" height="220"></canvas>
-      <div class="hint">위로 갈수록 잘한 것이다. 선이 올라가면 실력이 오르고 있다는 뜻이다.</div>
+      <div class="rowline" style="margin-bottom:8px">
+        <div class="sec" style="flex:1;margin-bottom:0">성장 그래프</div>
+      </div>
+      <div class="pill-row" style="margin-bottom:10px">
+        <button class="pill${byDate?" on":""}" onclick="setAxis('date')">푼 순서</button>
+        <button class="pill${byDate?"":" on"}" onclick="setAxis('exam')">시험 연도순</button>
+      </div>
+      <div style="height:240px"><canvas id="growth"></canvas></div>
+      <div class="hint">${byDate
+        ? "푼 날짜 순서다. 선이 올라가면 실력이 오르고 있다는 뜻이다."
+        : "시험이 치러진 연도 순서다. 어느 회차가 어려웠는지 보는 용도다."}</div>
     </div>`;
   }
 
@@ -395,30 +452,103 @@ function renderMine(m){
   drawGrowth(list);
 }
 
-// 등급이 있으면 등급 추이, 없으면 정답률 추이를 그린다
+// 과목마다 선을 따로 그린다. 가로축은 '푼 순서'(기본) 또는 '시험 연도순'.
+function setAxis(v){ ST.axis = v; render(); }
+
+// 축이 잘리지 않도록 여유를 두고, 곡선 왜곡 없이 그린다
+function axisY(hasGrade){
+  return hasGrade
+    ? { reverse:true, min:0.6, max:9.4, offset:true,
+        grid:{ color:"#EDF0F5", drawBorder:false },
+        ticks:{ stepSize:1, font:{size:11.5}, color:"#8A99AB", padding:6,
+                callback:v => (Number.isInteger(v) && v>=1 && v<=9) ? v+"등급" : "" } }
+    : { min:0, max:105, offset:true,
+        grid:{ color:"#EDF0F5", drawBorder:false },
+        ticks:{ stepSize:20, font:{size:11.5}, color:"#8A99AB", padding:6,
+                callback:v => v<=100 ? v+"점" : "" } };
+}
+function axisX(){
+  return { grid:{ display:false, drawBorder:false },
+           ticks:{ font:{size:11}, color:"#8A99AB", padding:4 } };
+}
+function chartPlugins(tipTitle, hasGrade){
+  return {
+    legend:{ display:true, position:"top", align:"end",
+      labels:{ font:{size:12, weight:"600"}, boxWidth:8, boxHeight:8,
+               usePointStyle:true, pointStyle:"circle", padding:14, color:"#46586C" } },
+    tooltip:{ backgroundColor:"#22303F", padding:10, cornerRadius:8,
+      titleFont:{size:12}, bodyFont:{size:12.5},
+      callbacks:{ title:tipTitle,
+        label:c => ` ${c.dataset.label} ${c.parsed.y}${hasGrade?"등급":"점"}` } }
+  };
+}
+// 선 스타일 (점 테두리를 흰색으로 줘서 겹쳐도 또렷하게)
+function lineStyle(color){
+  return { borderColor:color, backgroundColor:color,
+           tension:0, spanGaps:true, borderWidth:2.5,
+           pointRadius:5, pointHoverRadius:7,
+           pointBackgroundColor:color, pointBorderColor:"#fff", pointBorderWidth:2 };
+}
 function drawGrowth(list){
   const el = document.getElementById("growth");
   if(!el) return;
-  const arr = list.slice().sort((a,b)=> a.date>b.date?1:-1);
-  const labels = arr.map(a=>`${String(a.year).slice(2)}·${a.month}월 ${a.subject}`);
-  const grades = arr.map(a=>gradeOf(a));
-  const hasGrade = grades.some(g=>g!=null);
-  const ds = hasGrade
-    ? [{ label:"등급", data:grades, borderColor:"#5F87AC", backgroundColor:"#5F87AC",
-         tension:.3, spanGaps:true, pointRadius:5, borderWidth:3 }]
-    : [{ label:"원점수", data:arr.map(a=>rawOf(a)), borderColor:"#2f9d76", backgroundColor:"#2f9d76",
-         tension:.3, spanGaps:true, pointRadius:5, borderWidth:3 }];
+  const hasGrade = list.some(a=>gradeOf(a)!=null);
+  const byDate = ST.axis !== "exam";
+  const val = a => hasGrade ? gradeOf(a) : rawOf(a);
+
+  const COLOR = { 국어:"#22303F", 수학:"#c65f5f", 영어:"#5F87AC", 한국사:"#8A99AB",
+                  통합사회:"#2f9d76", 통합과학:"#b07f38", 사회:"#2f9d76", 과학:"#b07f38" };
+  const PALETTE = ["#22303F","#c65f5f","#5F87AC","#2f9d76","#b07f38","#6B4E9E","#0E7C7B"];
+  const subjs = [];
+  list.forEach(a=>{ if(!subjs.includes(a.subject)) subjs.push(a.subject); });
+
+  let labels, datasets, tipTitle;
+
+  if(byDate){
+    // 푼 날짜 순. 같은 날 여러 과목을 풀었으면 한 칸에 모인다.
+    const arr = list.slice().sort((a,b)=> a.date===b.date ? (a.createdAt||0)-(b.createdAt||0) : (a.date>b.date?1:-1));
+    const days = [];
+    arr.forEach(a=>{ if(!days.includes(a.date)) days.push(a.date); });
+    labels = days.map(d=>d.slice(5).replace("-","/"));
+    datasets = subjs.map((sub,i)=>{
+      const data = days.map(d=>{
+        const hits = arr.filter(a=>a.date===d && a.subject===sub);
+        return hits.length ? val(hits[hits.length-1]) : null;
+      });
+      if(!data.some(v=>v!=null)) return null;
+      const c = COLOR[sub] || PALETTE[i % PALETTE.length];
+      return { label:sub, data, ...lineStyle(c) };
+    }).filter(Boolean);
+    tipTitle = i => {
+      const d = days[i[0].dataIndex];
+      const one = arr.find(a=>a.date===d);
+      return `${d} · ${one?examName(one.year,one.examGrade,one.month):""}`;
+    };
+  } else {
+    // 시험이 치러진 연도 순
+    const keys = [];
+    list.forEach(a=>{ const k=`${a.year}_${a.examGrade}_${a.month}`; if(!keys.includes(k)) keys.push(k); });
+    keys.sort(cmpKey);
+    labels = keys.map(k=>{ const [y,g,mo]=k.split("_"); return `${String(y).slice(2)}·${mo}월`; });
+    datasets = subjs.map((sub,i)=>{
+      const data = keys.map(k=>{
+        const hits = list.filter(a=>`${a.year}_${a.examGrade}_${a.month}`===k && a.subject===sub);
+        return hits.length ? val(hits[hits.length-1]) : null;
+      });
+      if(!data.some(v=>v!=null)) return null;
+      const c = COLOR[sub] || PALETTE[i % PALETTE.length];
+      return { label:sub, data, ...lineStyle(c) };
+    }).filter(Boolean);
+    tipTitle = i => { const [y,g,mo]=keys[i[0].dataIndex].split("_"); return examName(+y,g,+mo); };
+  }
+
   chart = new Chart(el, {
-    type:"line", data:{ labels, datasets:ds },
-    options:{ responsive:true,
-      scales:{ y: hasGrade
-        ? { reverse:true, min:1, max:9, ticks:{ stepSize:1, font:{size:12},
-            callback:v=>v+"등급" } }
-        : { min:0, max:100, ticks:{ font:{size:12}, callback:v=>v+"점" } },
-        x:{ ticks:{ font:{size:10}, maxRotation:30 } } },
-      plugins:{ legend:{ display:false },
-        tooltip:{ callbacks:{ title:i=>examName(arr[i[0].dataIndex].year, arr[i[0].dataIndex].examGrade, arr[i[0].dataIndex].month),
-          label:c=> hasGrade ? `${c.parsed.y}등급` : `${c.parsed.y}점` } } } }
+    type:"line", data:{ labels, datasets },
+    options:{ responsive:true, maintainAspectRatio:false,
+      layout:{ padding:{ top:6, right:10, bottom:2, left:2 } },
+      interaction:{ mode:"nearest", intersect:false },
+      scales:{ y: axisY(hasGrade), x: axisX() },
+      plugins: chartPlugins(tipTitle, hasGrade) }
   });
 }
 
@@ -536,7 +666,7 @@ function saveAttempt(){
     date: ST.date, total: qn, wrong: ST.wrong.slice(),
     raw: ST.raw, createdAt: Date.now()
   });
-  persist(); view="home"; render();
+  saveAttempt_(attempts[attempts.length-1]); view="home"; render();
   toast(`저장 완료 — 틀린 ${ST.wrong.length}개 기록됨`);
 }
 
@@ -664,7 +794,9 @@ function editField(id,f,v){
   a[f] = v;
 }
 function saveEdit(){
-  persist(); ST.edit = false; render();
+  const a = attempts.find(x=>x.id===ST.detailId);
+  if(a) saveAttempt_(a);
+  ST.edit = false; render();
   toast("수정 저장됨");
 }
 
@@ -750,17 +882,137 @@ function gradeColor(g){
   return "#c65f5f";
 }
 
+/* ── 교사: 학생별 비교 ── */
+const CMP_SUBJECTS = ["국어","수학","통합사회","통합과학","영어"];
+function renderCmp(m){
+  if(!ST.cmpSubj) ST.cmpSubj = "국어";
+  const sub = ST.cmpSubj;
+  const list = attempts.filter(a=>a.subject===sub);
+
+  let h = `<div class="card">
+    <div class="sec">과목별 학생 비교</div>
+    <div class="pill-row">
+      ${CMP_SUBJECTS.map(x=>`<button class="pill${x===sub?" on":""}" onclick="setCmpSubj('${x}')">${x}</button>`).join("")}
+    </div>
+    <div class="hint">시험 회차를 가로축에 놓고 학생마다 선을 그린다. 위로 갈수록 잘한 것이다.<br>
+    같은 회차를 여러 번 연습했으면 가장 최근 기록이 쓰인다.</div>
+  </div>`;
+
+  if(!list.length){
+    h += `<div class="card empty">${esc(sub)} 기록이 아직 없다.</div>`;
+    m.innerHTML = h; return;
+  }
+
+  // 회차 정렬
+  const keys = [];
+  list.forEach(a=>{ const k=`${a.year}_${a.examGrade}_${a.month}`; if(!keys.includes(k)) keys.push(k); });
+  keys.sort(cmpKey);
+  const labels = keys.map(k=>{ const [y,g,mo]=k.split("_"); return `${String(y).slice(2)}·${mo}월`; });
+
+  // 학생별 데이터
+  const rows = students.map(st=>{
+    const data = keys.map(k=>{
+      const hits = list.filter(a=>a.studentId===st.id && `${a.year}_${a.examGrade}_${a.month}`===k);
+      if(!hits.length) return null;
+      const a = hits[hits.length-1];
+      return { g: gradeOf(a), r: rawOf(a) };
+    });
+    return { st, data };
+  }).filter(r=>r.data.some(v=>v!=null));
+
+  const hasGrade = rows.some(r=>r.data.some(v=>v && v.g!=null));
+
+  h += `<div class="card">
+    <div class="sec">${esc(sub)} · ${hasGrade?"등급":"원점수"} 비교</div>
+    <div style="height:280px"><canvas id="cmpChart"></canvas></div>
+    <div class="hint">${hasGrade?"등급컷이 등록된 회차만 등급으로 그려진다.":"등급컷이 아직 없어 원점수로 그린다."}</div>
+  </div>`;
+
+  // 회차별 표
+  h += `<div class="card">
+    <div class="sec">회차별 상세</div>
+    <div style="overflow-x:auto">
+    <table class="pin" style="min-width:100%">
+      <tr><th style="text-align:left">학생</th>${keys.map((k,i)=>`<th>${esc(labels[i])}</th>`).join("")}</tr>
+      ${rows.map(r=>`<tr>
+        <td style="text-align:left;font-weight:700;white-space:nowrap">${esc(r.st.name)}
+          <span style="color:#8A99AB;font-weight:500;font-size:11px">${esc(r.st.grade)}</span></td>
+        ${r.data.map(v=>{
+          if(!v) return `<td style="color:#C9CFDA">–</td>`;
+          if(v.g!=null) return `<td><b style="color:${gradeColor(v.g)}">${v.g}등급</b><br>
+            <span style="font-size:11px;color:#8A99AB">${v.r!=null?v.r+"점":""}</span></td>`;
+          return `<td>${v.r!=null?`<b>${v.r}점</b>`:"–"}</td>`;
+        }).join("")}
+      </tr>`).join("")}
+    </table></div>
+    <div class="hint">한 회차를 여러 번 연습했으면 가장 최근 기록이 표시된다.</div>
+  </div>`;
+
+  m.innerHTML = h;
+  drawCmp(keys, labels, rows, hasGrade);
+}
+function cmpKey(x,y){
+  const [ax,gx,mx]=x.split("_"), [ay,gy,my]=y.split("_");
+  if(+ax!==+ay) return ax-ay;
+  const gi=["중3","고1","고2","고3"];
+  if(gi.indexOf(gx)!==gi.indexOf(gy)) return gi.indexOf(gx)-gi.indexOf(gy);
+  return mx-my;
+}
+function setCmpSubj(x){ ST.cmpSubj=x; render(); }
+function drawCmp(keys, labels, rows, hasGrade){
+  const el = document.getElementById("cmpChart");
+  if(!el) return;
+  const PALETTE = ["#22303F","#c65f5f","#5F87AC","#2f9d76","#b07f38","#6B4E9E","#0E7C7B",
+                   "#d17b3f","#4a7c9e","#9e4a6e","#3f8f6b","#7a5c9e"];
+  const datasets = rows.map((r,i)=>{
+    const c = PALETTE[i % PALETTE.length];
+    return {
+      label: r.st.name,
+      data: r.data.map(v=> v ? (hasGrade ? v.g : v.r) : null),
+      ...lineStyle(c)
+    };
+  });
+  chart = new Chart(el, {
+    type:"line", data:{ labels, datasets },
+    options:{ responsive:true, maintainAspectRatio:false,
+      layout:{ padding:{ top:6, right:10, bottom:2, left:2 } },
+      interaction:{ mode:"nearest", intersect:false },
+      scales:{ y: axisY(hasGrade), x: axisX() },
+      plugins: chartPlugins(
+        i=>{ const [y,g,mo]=keys[i[0].dataIndex].split("_"); return examName(+y,g,+mo); },
+        hasGrade) }
+  });
+}
+
 /* ── 교사: 등급컷 관리 ── */
 function renderCut(m){
-  const keys = [...new Set(attempts.map(cutKey))].sort().reverse();
+  const keys = [...new Set([...attempts.map(cutKey), ...Object.keys(cuts)])].sort(cmpKey).reverse();
   let h = `<div class="card">
     <div class="sec">모의고사 등급컷</div>
     <div class="hint">회차마다 한 번만 넣으면 그 시험을 푼 학생 전원에게 자동 적용된다.<br>
-    학생이 <b>원점수</b>를 적어야 등급이 나온다. 문항 O/X로 나오는 정답률은 배점이 반영되지 않아 등급 계산에 쓸 수 없다.<br>
-    영어·한국사는 절대평가라 넣을 필요가 없다.</div>
+    학생 기록이 없어도 미리 넣어둘 수 있다. 영어·한국사는 절대평가라 넣을 필요가 없다.</div>
+    <div style="margin-top:12px;background:#F8FAFC;border-radius:9px;padding:12px">
+      <div style="font-size:12.5px;font-weight:800">회차 직접 추가</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div><div style="font-size:11px;font-weight:700;color:#8A99AB">연도</div>
+          <select id="nc-year" style="margin-top:3px">
+            ${(()=>{const ys=[];for(let y=thisYear;y>=thisYear-8;y--)ys.push(y);
+              return ys.map(y=>`<option value="${y}">${y}년</option>`).join("");})()}
+          </select></div>
+        <div><div style="font-size:11px;font-weight:700;color:#8A99AB">시험 학년</div>
+          <select id="nc-grade" style="margin-top:3px">
+            ${EXAM_GRADES.map(g=>`<option value="${g}"${g==="고2"?" selected":""}>${g}</option>`).join("")}
+          </select></div>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:#8A99AB;margin-top:8px">회차</div>
+      <select id="nc-month" style="margin-top:3px">
+        ${[3,4,6,7,9,10,11].map(mm=>`<option value="${mm}"${mm===6?" selected":""}>${mm}월</option>`).join("")}
+      </select>
+      <div style="margin-top:10px"><button class="btn-ghost" onclick="addCutRound()">이 회차 등급컷 넣기</button></div>
+    </div>
   </div>`;
   if(!keys.length){
-    h += `<div class="card empty">아직 기록된 회차가 없다.<br>학생이 연습을 기록하면 여기 목록에 나타난다.</div>`;
+    h += `<div class="card empty">아직 등록된 회차가 없다.<br>위에서 회차를 골라 등급컷을 미리 넣어두면 된다.</div>`;
     m.innerHTML = h; return;
   }
   keys.forEach(k=>{
@@ -782,13 +1034,32 @@ function renderCut(m){
   m.innerHTML = h;
 }
 function openCut(k){ ST.cutKey=k; view="cutEdit"; render(); }
+// 등급컷을 넣을 과목 목록 (기본 4과목 + 실제 기록된 과목)
+function cutSubjects(k){
+  const base = ["국어","수학","통합사회","통합과학"];
+  const rec  = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))];
+  return [...new Set([...base, ...rec])].filter(s=>!ABS_GRADE[s]);
+}
+// 학생 기록이 없어도 회차를 만들어 등급컷을 미리 넣는다
+function addCutRound(){
+  const y = +document.getElementById("nc-year").value;
+  const g = document.getElementById("nc-grade").value;
+  const mo = +document.getElementById("nc-month").value;
+  if(!(EXAM_MONTHS[g]||[]).some(x=>x===mo || x.m===mo)){
+    if(!confirm(`${g}에는 ${mo}월 시험이 없다. 그래도 만들까?`)) return;
+  }
+  const k = `${y}_${g}_${mo}`;
+  if(!cuts[k]) cuts[k] = {};
+  openCut(k);
+}
 
 function renderCutEdit(m){
   const k = ST.cutKey;
   const [y,g,mo] = k.split("_");
-  // 이 회차에서 실제로 기록된 과목만 보여준다
-  const used = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))]
-                 .filter(s=>!ABS_GRADE[s]);
+  // 기본 4과목은 항상 보여주고, 기록에 등장한 과목을 추가로 붙인다
+  const base = ["국어","수학","통합사회","통합과학"];
+  const rec  = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))];
+  const used = [...new Set([...base, ...rec])].filter(s=>!ABS_GRADE[s]);
   const c = cuts[k] || {};
   let h = `<button class="back" onclick="view='home';render()">‹ 등급컷 목록으로</button>
   <div class="card">
@@ -853,7 +1124,7 @@ function applyCutPaste(){
   const raw = document.getElementById("cut-paste").value;
   if(!raw.trim()) return toast("붙여넣을 내용이 없다");
   const k = ST.cutKey;
-  const used = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))].filter(s=>!ABS_GRADE[s]);
+  const used = cutSubjects(k);
   let filled=0;
   raw.split(/\n/).forEach(line=>{
     if(!line.trim()) return;
@@ -874,7 +1145,7 @@ function parseNums(v, max){
 }
 function saveCuts(){
   const k = ST.cutKey;
-  const used = [...new Set(attempts.filter(a=>cutKey(a)===k).map(a=>a.subject))].filter(s=>!ABS_GRADE[s]);
+  const used = cutSubjects(k);
   const obj = {};
   const warn = [];
   used.forEach(sub=>{
@@ -899,7 +1170,7 @@ function saveCuts(){
   });
   if(warn.length && !confirm(warn.join("\n") + "\n\n그래도 저장할까?")) return;
   cuts[k] = obj;
-  persist(); view="home"; render();
+  saveCuts_(k); view="home"; render();
   toast("저장 완료 — 이 회차 전원에게 적용된다");
 }
 
@@ -907,12 +1178,12 @@ function saveTag(key,q,v){
   if(!tags[key]) tags[key]={};
   const t=v.trim();
   if(t) tags[key][q]=t; else delete tags[key][q];
-  persist(); toast("저장됨");
+  saveTag_(key,q,t); toast("저장됨");
 }
 function delAttempt(id){
   if(!confirm("이 기록을 지울까?")) return;
   attempts = attempts.filter(a=>a.id!==id);
-  persist(); view="home"; render();
+  removeAttempt_(id); view="home"; render();
 }
 
 /* ── 학생: 내 오답 ── */
@@ -1138,7 +1409,7 @@ function setPin(id,v){
   if(p === ADMIN_PIN) return toast("선생님 PIN과 같게 둘 수 없다");
   if(students.some(s=>s.id!==id && String(s.pin)===p)) return toast("다른 학생과 겹친다");
   const s = students.find(x=>x.id===id); if(!s) return;
-  s.pin = p; persist(); toast(`${s.name} PIN 변경됨`);
+  s.pin = p; saveStudent_(s); toast(`${s.name} PIN 변경됨`);
 }
 function addStudent(){
   const name=document.getElementById("ns-name").value.trim();
@@ -1148,16 +1419,18 @@ function addStudent(){
   if(!name) return toast("이름을 넣어야 한다");
   if(!/^\d{4}$/.test(pin)) return toast("PIN은 숫자 4자리여야 한다");
   if(pin===ADMIN_PIN || students.some(s=>String(s.pin)===pin)) return toast("이미 쓰는 PIN이다");
-  students.push({id:uid(), name, grade, school, pin});
-  persist(); render(); toast(`${name} 추가됨`);
+  const ns={id:uid(), name, grade, school, pin};
+  students.push(ns);
+  saveStudent_(ns); render(); toast(`${name} 추가됨`);
 }
 function delStudent(id){
   const s=students.find(x=>x.id===id); if(!s) return;
   const cnt = attempts.filter(a=>a.studentId===id).length;
   if(!confirm(`${s.name} 삭제. 연습 기록 ${cnt}건도 함께 지워진다. 진행할까?`)) return;
+  const delIds = attempts.filter(a=>a.studentId===id).map(a=>a.id);
   students = students.filter(x=>x.id!==id);
   attempts = attempts.filter(a=>a.studentId!==id);
-  persist(); render();
+  removeStudent_(id); delIds.forEach(removeAttempt_); render();
 }
 
 /* ═══════ 시작 ═══════ */
