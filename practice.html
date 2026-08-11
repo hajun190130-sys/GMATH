@@ -158,7 +158,14 @@ let me = null;            // 로그인한 학생 (null이면 교사)
 let isAdmin = false;
 let view = "home", tab = "", chart = null;
 let ST = {}, gateStep = "pick", gatePick = null;
-let dbRef = null, connected = false, _selfWrite = 0, seeded = false;
+let dbRef = null, connected = false, _selfWrite = 0, seeded = false, offline = false;
+
+// 이름 기반 고정 id — 명단이 다시 만들어져도 값이 변하지 않는다
+function seedId(name){
+  let h = 0;
+  for(let i=0;i<name.length;i++){ h = (h*31 + name.charCodeAt(i)) >>> 0; }
+  return "s_" + h.toString(36);
+}
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -173,17 +180,19 @@ function initFirebase(cb){
     dbRef = firebase.database().ref(DB_KEY);
   }catch(e){
     setStatus("● 연결 실패 — 새로고침 필요","#E8A33D");
-    if(!students.length) students = DEFAULT_STUDENTS.map(s=>({id:uid(), ...s}));
+    offline = true;
+    if(!students.length) students = DEFAULT_STUDENTS.map(s=>({...s, id:seedId(s.name)}));
     renderGate(); cb&&cb(); return;
   }
 
   const to = setTimeout(()=>{ if(!connected){
     setStatus("● 연결 안 됨 — GitHub Pages 주소로 열어야 저장된다","#E8A33D");
-    if(!students.length) students = DEFAULT_STUDENTS.map(s=>({id:uid(), ...s}));
+    offline = true;
+    if(!students.length) students = DEFAULT_STUDENTS.map(s=>({...s, id:seedId(s.name)}));
     renderGate(); cb&&cb(); } }, 8000);
 
   dbRef.on("value", snap=>{
-    clearTimeout(to); connected = true;
+    clearTimeout(to); connected = true; offline = false;
     setStatus("● 실시간 저장 중","#5CB87A");
     if(Date.now()-_selfWrite < 1500) return;
     // 채점 수정 중이면 데이터도 화면도 건드리지 않는다 (편집 내용 보호)
@@ -195,9 +204,10 @@ function initFirebase(cb){
     tags = d.tags || {};
     cuts = d.cuts || {};
     // 최초 1회: 명단이 비어 있으면 기본 명단 등록
-    if(!students.length && !seeded){
+    // 기록이 하나라도 있으면 명단을 새로 만들지 않는다 (연결 끊김 방지)
+    if(!students.length && !attempts.length && !seeded){
       seeded = true;
-      students = DEFAULT_STUDENTS.map(s=>({id:uid(), ...s}));
+      students = DEFAULT_STUDENTS.map(s=>({...s, id:seedId(s.name)}));
       persistAll();
     }
     if(me) me = students.find(s=>s.id===me.id) || me;
@@ -219,38 +229,38 @@ function onErr(){ setStatus("● 저장 실패 — 인터넷 확인","#E8A33D");
 
 // 기록 하나만 저장 (다른 사람 기록을 건드리지 않는다)
 function saveAttempt_(a){
-  if(!dbRef) return;
+  if(!dbRef || offline || !connected) return;
   _selfWrite = Date.now();
   dbRef.child("attempts").child(a.id).set(a).catch(onErr);
 }
 function removeAttempt_(id){
-  if(!dbRef) return;
+  if(!dbRef || offline || !connected) return;
   _selfWrite = Date.now();
   dbRef.child("attempts").child(id).remove().catch(onErr);
 }
 function saveStudent_(st){
-  if(!dbRef) return;
+  if(!dbRef || offline || !connected) return;
   _selfWrite = Date.now();
   dbRef.child("students").child(st.id).set(st).catch(onErr);
 }
 function removeStudent_(id){
-  if(!dbRef) return;
+  if(!dbRef || offline || !connected) return;
   _selfWrite = Date.now();
   dbRef.child("students").child(id).remove().catch(onErr);
 }
 function saveCuts_(key){
-  if(!dbRef) return;
+  if(!dbRef || offline || !connected) return;
   _selfWrite = Date.now();
   dbRef.child("cuts").child(key).set(cuts[key]||null).catch(onErr);
 }
 function saveTag_(key,q,val){
-  if(!dbRef) return;
+  if(!dbRef || offline || !connected) return;
   _selfWrite = Date.now();
   dbRef.child("tags").child(key).child(String(q)).set(val||null).catch(onErr);
 }
 // 최초 명단 등록 등 일괄 저장이 필요할 때만 사용
 function persistAll(){
-  if(!dbRef) return;
+  if(!dbRef || offline || !connected) return;
   _selfWrite = Date.now();
   const so={}, ao={};
   students.forEach(x=>so[x.id]=x);
@@ -1451,8 +1461,67 @@ function renderStu(m){
     <label>PIN (4자리)</label><input id="ns-pin" maxlength="4" inputmode="numeric" placeholder="예: 1106">
     <div style="margin-top:14px"><button class="btn" onclick="addStudent()">추가</button></div>
   </div>
-  `;
+  ` + orphanHtml();
   m.innerHTML = h;
+}
+
+// 명단에 없는 studentId를 가진 기록들을 모아 보여준다
+function orphanGroups(){
+  const ids = new Set(students.map(s=>s.id));
+  const g = {};
+  attempts.forEach(a=>{
+    if(ids.has(a.studentId)) return;
+    (g[a.studentId] = g[a.studentId] || []).push(a);
+  });
+  return g;
+}
+function orphanHtml(){
+  const g = orphanGroups();
+  const keys = Object.keys(g);
+  if(!keys.length) return "";
+  const total = keys.reduce((n,k)=>n+g[k].length,0);
+  return `<div class="card" style="border:1.5px solid #E8C7C4">
+    <div class="sec" style="color:#c65f5f">주인이 끊긴 기록 ${total}건</div>
+    <div class="hint">명단이 새로 만들어지면서 연결이 끊긴 기록이다.
+    아래에서 누구 것인지 골라 이어주면 그대로 되살아난다. 내용은 그대로 남아 있다.</div>
+    ${keys.map((k,i)=>{
+      const arr = g[k].slice().sort((a,b)=> a.date>b.date?1:-1);
+      return `<div style="margin-top:14px;padding-top:12px;border-top:1px solid #F1F5F9">
+        <div style="font-weight:800;font-size:13.5px">묶음 ${i+1} · ${arr.length}건</div>
+        <div class="hint" style="font-family:ui-monospace,monospace">${esc(k)}</div>
+        <div style="margin-top:8px;font-size:12.5px;line-height:1.85">
+          ${arr.map(a=>`<div>· ${esc(a.subject)} ${esc(examName(a.year,a.examGrade,a.month))}
+            ${rawOf(a)!=null?`<b>${rawOf(a)}점</b>`:"(점수없음)"} <span style="color:#8A99AB">${esc(a.date)}</span></div>`).join("")}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <select id="orph-${k}" style="margin-top:0;flex:1">
+            <option value="">— 학생 고르기 —</option>
+            ${students.map(st=>`<option value="${st.id}">${esc(st.name)} (${esc(st.grade)})</option>`).join("")}
+          </select>
+          <button class="btn-ghost btn-sm" style="width:auto;white-space:nowrap" onclick="linkOrphan('${k}')">연결</button>
+        </div>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+function linkOrphan(oldId){
+  const sel = document.getElementById("orph-"+oldId);
+  const newId = sel ? sel.value : "";
+  if(!newId) return toast("학생을 골라야 한다");
+  const st = students.find(x=>x.id===newId);
+  const targets = attempts.filter(a=>a.studentId===oldId);
+  if(!confirm(`${targets.length}건을 ${st.name}에게 연결한다. 진행할까?`)) return;
+  targets.forEach(a=>{ a.studentId = newId; saveAttempt_(a); });
+  const seen = {};
+  attempts.filter(a=>a.studentId===newId)
+    .sort((a,b)=> (a.createdAt||0)-(b.createdAt||0))
+    .forEach(a=>{
+      const key = `${a.year}_${a.examGrade}_${a.month}_${a.subject}`;
+      seen[key] = (seen[key]||0)+1;
+      if(a.tryNo !== seen[key]){ a.tryNo = seen[key]; saveAttempt_(a); }
+    });
+  render();
+  toast(`${st.name}에게 ${targets.length}건 연결됨`);
 }
 function setPin(id,v){
   const p = String(v).trim();
