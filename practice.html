@@ -6,7 +6,13 @@
 <title>지수학 모의고사 연습 기록</title>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+  // 차단 대비 대체 경로
+  if(typeof Chart === "undefined"){
+    document.write('<script src="https://unpkg.com/chart.js@4.4.1/dist/chart.umd.js"><\/script>');
+  }
+</script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',-apple-system,sans-serif;
@@ -503,6 +509,11 @@ function lineStyle(color){
 function drawGrowth(list){
   const el = document.getElementById("growth");
   if(!el) return;
+  if(typeof Chart === "undefined"){
+    el.parentElement.innerHTML = '<div class="hint" style="padding:20px;text-align:center">그래프를 불러오지 못했다. 새로고침하면 대개 해결된다.</div>';
+    return;
+  }
+  try{
   const hasGrade = list.some(a=>gradeOf(a)!=null);
   const byDate = ST.axis !== "exam";
   const val = a => hasGrade ? gradeOf(a) : rawOf(a);
@@ -561,6 +572,7 @@ function drawGrowth(list){
       scales:{ y: axisY(hasGrade), x: axisX() },
       plugins: chartPlugins(tipTitle, hasGrade) }
   });
+  }catch(e){ console.log("그래프 오류", e); }
 }
 
 /* ── 새 기록 입력 (매쓰플랫식) ── */
@@ -974,6 +986,11 @@ function toggleStu(id){ ST.openStu = (ST.openStu===id) ? null : id; render(); }
 function drawCmp(keys, labels, rows, hasGrade){
   const el = document.getElementById("cmpChart");
   if(!el) return;
+  if(typeof Chart === "undefined"){
+    el.parentElement.innerHTML = '<div class="hint" style="padding:20px;text-align:center">그래프를 불러오지 못했다. 아래 표로 확인하면 된다.</div>';
+    return;
+  }
+  try{
   const PALETTE = ["#22303F","#c65f5f","#5F87AC","#2f9d76","#b07f38","#6B4E9E","#0E7C7B",
                    "#d17b3f","#4a7c9e","#9e4a6e","#3f8f6b","#7a5c9e"];
   const datasets = rows.map((r,i)=>{
@@ -994,6 +1011,7 @@ function drawCmp(keys, labels, rows, hasGrade){
         i=>{ const [y,g,mo]=keys[i[0].dataIndex].split("_"); return examName(+y,g,+mo); },
         hasGrade) }
   });
+  }catch(e){ console.log("그래프 오류", e); }
 }
 
 /* ── 교사: 등급컷 관리 ── */
@@ -1478,9 +1496,29 @@ function orphanGroups(){
 function orphanHtml(){
   const g = orphanGroups();
   const keys = Object.keys(g);
-  if(!keys.length) return "";
+
+  // 진단 정보 — 콘솔 없이 화면에서 바로 확인
+  const diag = `<div class="card" style="background:#F8FAFC">
+    <div class="sec">데이터 상태</div>
+    <div style="font-size:12.5px;line-height:1.9;font-family:ui-monospace,monospace">
+      학생 ${students.length}명 · 기록 ${attempts.length}건 · 끊긴 기록 ${keys.reduce((n,k)=>n+g[k].length,0)}건<br>
+      그래프 라이브러리: ${typeof Chart === "undefined" ? "❌ 차단됨" : "✅ 정상"}
+    </div>
+    <div style="margin-top:10px;font-size:11.5px;line-height:1.8;color:#46586C">
+      ${students.map(s=>{
+        const n = attempts.filter(a=>a.studentId===s.id).length;
+        return `${esc(s.name)} <span style="color:${n?'#2f9d76':'#C9CFDA'}">${n}건</span>`;
+      }).join(" · ")}
+    </div>
+    ${attempts.length ? `<div style="margin-top:10px;font-size:11px;color:#8A99AB;word-break:break-all">
+      기록에 적힌 주인 id: ${[...new Set(attempts.map(a=>a.studentId))].map(esc).join(", ")}<br>
+      명단 id: ${students.slice(0,3).map(s=>esc(s.name)+"="+esc(s.id)).join(", ")} …
+    </div>`:""}
+  </div>`;
+
+  if(!keys.length) return diag;
   const total = keys.reduce((n,k)=>n+g[k].length,0);
-  return `<div class="card" style="border:1.5px solid #E8C7C4">
+  return diag + `<div class="card" style="border:1.5px solid #E8C7C4">
     <div class="sec" style="color:#c65f5f">주인이 끊긴 기록 ${total}건</div>
     <div class="hint">명단이 새로 만들어지면서 연결이 끊긴 기록이다.
     아래에서 누구 것인지 골라 이어주면 그대로 되살아난다. 내용은 그대로 남아 있다.</div>
