@@ -122,6 +122,7 @@ const DEFAULT_STUDENTS = [
   {name:"오윤아", grade:"중3", school:"동부중", pin:"1103"},
   {name:"강나율", grade:"중3", school:"동부중", pin:"1104"},
   {name:"전지우", grade:"중3", school:"동부중", pin:"1105"},
+  {name:"최아인", grade:"중3", school:"동부중", pin:"1106"},
   {name:"윤선후", grade:"고2", school:"신장고", pin:"0901"},
   {name:"이민혁", grade:"고2", school:"남한고", pin:"0902"},
   {name:"황윤성", grade:"고2", school:"남한고", pin:"0903"},
@@ -959,6 +960,7 @@ function cmpKey(x,y){
   return mx-my;
 }
 function setCmpSubj(x){ ST.cmpSubj=x; render(); }
+function toggleStu(id){ ST.openStu = (ST.openStu===id) ? null : id; render(); }
 function drawCmp(keys, labels, rows, hasGrade){
   const el = document.getElementById("cmpChart");
   if(!el) return;
@@ -1315,7 +1317,7 @@ function renderAll(m){
         </div>
         <div style="font-weight:800;font-size:16px">${rawOf(last)!=null?rawOf(last)+"점":"–"}</div>
       </div>
-      ${list.slice(0,4).map(a=>`
+      ${(ST.openStu===s.id ? list : list.slice(0,4)).map(a=>`
         <div class="rowline" style="margin-top:9px;cursor:pointer" onclick="openDetail('${a.id}')">
           <div class="badge" style="background:#F1F5F9;color:#46586C">${a.tryNo}차</div>
           <div style="flex:1;font-size:12.5px">${esc(a.subject)} · ${esc(examName(a.year,a.examGrade,a.month))}</div>
@@ -1323,7 +1325,9 @@ function renderAll(m){
           ${(rawOf(a)!=null && gradeOf(a)==null && !ABS_GRADE[a.subject])
             ? `<span class="badge" style="background:rgba(232,163,61,.16);color:#a3701f;margin-left:5px">컷없음</span>`:""}
         </div>`).join("")}
-      ${list.length>4?`<div class="hint">외 ${list.length-4}건</div>`:""}
+      ${list.length>4?`<div style="margin-top:10px">
+        <button class="btn-ghost btn-sm" style="width:100%" onclick="toggleStu('${s.id}')">
+          ${ST.openStu===s.id ? "▲ 접기" : `▼ 나머지 ${list.length-4}건 모두 보기`}</button></div>`:""}
     </div>`;
   });
   m.innerHTML = h;
@@ -1352,24 +1356,71 @@ function renderAna(m){
       ${keys.map(kk=>{const [yy,gg,mm,ss]=kk.split("_");
         return `<option value="${kk}"${kk===k?" selected":""}>${esc(ss)} · ${esc(examName(+yy,gg,+mm))}</option>`;}).join("")}
     </select>
-    <div class="hint">응시(연습) ${n}건 기준</div>
-  </div>
-  <div class="card">
-    <div class="sec">문항별 오답 빈도</div>
-    <div style="line-height:2.1;margin-top:4px">
-      ${sorted.slice(0,24).map(x=>{
-        const r=x.c/n, col = r>=0.6?"#c65f5f":(r>=0.35?"#b07f38":"#8A99AB");
-        return `<span class="badge" style="background:${col}1A;color:${col};border:1.4px solid ${col};margin-right:5px">${x.q}번 ${Math.round(r*100)}%</span>`;
+    <div class="hint">이 회차를 푼 ${n}명 기준</div>
+  </div>`;
+
+  // 응시자 명단 (누가 풀었는지)
+  const takers = list.map(a=>{
+    const st = students.find(x=>x.id===a.studentId);
+    return { name: st?st.name:"?", wrong: a.wrong||[] };
+  });
+  const qn = list[0]?.total || SUBJECTS[subj]?.q || 30;
+
+  h += `<div class="card">
+    <div class="sec">공통 오답 지도</div>
+    <div class="hint">색이 진할수록 많은 학생이 틀린 문항이다. 숫자 아래가 틀린 인원이다.</div>
+    <div class="qgrid" style="margin-top:12px">
+      ${Array.from({length:qn},(_,i)=>i+1).map(q=>{
+        const c = freq[q] || 0;
+        if(!c) return `<div class="q" style="border-color:#E7EAF0;color:#C9CFDA;background:#fff">
+          <span>${q}</span><span class="mark" style="color:#DDE2EA">0</span></div>`;
+        const r = c/n;                          // 오답률
+        const alpha = 0.14 + r*0.76;            // 농도: 옅음 → 진함
+        const dark = r >= 0.55;
+        return `<div class="q" title="${q}번 · ${c}명"
+          style="border-color:rgba(198,95,95,${Math.min(1,alpha+0.15)});
+                 background:rgba(198,95,95,${alpha.toFixed(2)});
+                 color:${dark?"#fff":"#a34848"}">
+          <span>${q}</span><span class="mark" style="color:${dark?"rgba(255,255,255,.85)":"#c65f5f"}">${c}명</span></div>`;
       }).join("")}
     </div>
-    ${hot.length?`<div style="margin-top:12px;font-size:13px;line-height:1.6">
-      <b>집중 보강 대상</b> — ${hot.map(x=>x.q+"번").join(", ")}</div>`:`<div class="hint">과반이 틀린 문항은 없다.</div>`}
-  </div>
-  ${tagArr.length?`<div class="card"><div class="sec">유형별 누적 오답</div>
+  </div>`;
+
+  // 공통 오답 목록 — 누가 틀렸는지까지
+  const shared = sorted.filter(x=>x.c>=2);
+  if(shared.length){
+    h += `<div class="card">
+      <div class="sec">둘 이상이 함께 틀린 문항</div>
+      ${shared.slice(0,14).map(x=>{
+        const who = takers.filter(t=>t.wrong.includes(x.q)).map(t=>t.name);
+        const t = tagOf(k, x.q);
+        const r = x.c/n;
+        const col = r>=0.6?"#c65f5f":(r>=0.35?"#b07f38":"#5F87AC");
+        return `<div style="margin-top:11px;padding-bottom:9px;border-bottom:1px solid #F1F5F9">
+          <div class="rowline">
+            <span class="badge" style="background:${col}1A;color:${col};border:1.3px solid ${col};min-width:46px;text-align:center">${x.q}번</span>
+            <div style="flex:1;font-size:12.5px;color:#46586C">${who.join(", ")}</div>
+            <b style="font-size:13px;color:${col}">${x.c}명 (${Math.round(r*100)}%)</b>
+          </div>
+          ${t?`<div class="hint" style="margin-top:3px">유형 — ${esc(t)}</div>`:""}
+        </div>`;
+      }).join("")}
+      ${hot.length?`<div style="margin-top:14px;font-size:13px;line-height:1.6;background:#F8FAFC;border-radius:8px;padding:12px">
+        <b>수업에서 반드시 다룰 문항</b><br>${hot.map(x=>`${x.q}번(${x.c}명)`).join(", ")}
+      </div>`:""}
+    </div>`;
+  } else {
+    h += `<div class="card"><div class="sec">둘 이상이 함께 틀린 문항</div>
+      <div class="hint">겹치는 오답이 없다. 각자 다른 문항에서 막혔다는 뜻이다.</div></div>`;
+  }
+
+  if(tagArr.length){
+    h += `<div class="card"><div class="sec">유형별 누적 오답</div>
     ${tagArr.slice(0,8).map(t=>`<div class="bar-row">
       <div class="bar-label">${esc(t.nm)}</div>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.round(t.c/tagArr[0].c*100)}%;background:#c65f5f"></div></div>
-      <div class="bar-num">${t.c}건</div></div>`).join("")}</div>`:""}`;
+      <div class="bar-num">${t.c}건</div></div>`).join("")}</div>`;
+  }
   m.innerHTML = h;
 }
 
