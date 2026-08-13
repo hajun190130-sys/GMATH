@@ -191,7 +191,7 @@ function initFirebase(cb){
     renderGate(); cb&&cb(); return;
   }
 
-  const to = setTimeout(()=>{ if(!connected){
+  const to = setTimeout(()=>{ if(!connected && !dbRef?.__ok){
     setStatus("● 연결 안 됨 — GitHub Pages 주소로 열어야 저장된다","#E8A33D");
     offline = true;
     if(!students.length) students = DEFAULT_STUDENTS.map(s=>({...s, id:seedId(s.name)}));
@@ -199,6 +199,7 @@ function initFirebase(cb){
 
   dbRef.on("value", snap=>{
     clearTimeout(to); connected = true; offline = false;
+    if(dbRef) dbRef.__ok = true;
     setStatus("● 실시간 저장 중","#5CB87A");
     if(Date.now()-_selfWrite < 1500) return;
     // 채점 수정 중이면 데이터도 화면도 건드리지 않는다 (편집 내용 보호)
@@ -231,42 +232,55 @@ function toList(v){
   if(v && typeof v === "object") return Object.values(v).filter(x=>x);
   return [];
 }
-function onErr(){ setStatus("● 저장 실패 — 인터넷 확인","#E8A33D"); }
+function canSave(){
+  if(!dbRef) { toast("아직 연결 전이다. 잠시 뒤 다시 시도해야 한다"); return false; }
+  if(!connected){ toast("서버에 연결되지 않아 저장되지 않았다"); return false; }
+  return true;
+}
+function onErr(e){
+  setStatus("● 저장 실패 — 인터넷 확인","#E8A33D");
+  toast("저장에 실패했다. 다시 시도해야 한다");
+  console.log("저장 오류", e);
+}
 
 // 기록 하나만 저장 (다른 사람 기록을 건드리지 않는다)
 function saveAttempt_(a){
-  if(!dbRef || offline || !connected) return;
+  if(!canSave()) return;
   _selfWrite = Date.now();
-  dbRef.child("attempts").child(a.id).set(a).catch(onErr);
+  dbRef.child("attempts").child(a.id).set(a)
+    .then(()=>{ setStatus("● 저장됨 "+new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}), "#5CB87A"); })
+    .catch(onErr);
 }
 function removeAttempt_(id){
-  if(!dbRef || offline || !connected) return;
+  if(!canSave()) return;
   _selfWrite = Date.now();
   dbRef.child("attempts").child(id).remove().catch(onErr);
 }
 function saveStudent_(st){
-  if(!dbRef || offline || !connected) return;
+  if(!canSave()) return;
   _selfWrite = Date.now();
-  dbRef.child("students").child(st.id).set(st).catch(onErr);
+  dbRef.child("students").child(st.id).set(st)
+    .then(()=>{ setStatus("● 저장됨 "+new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}), "#5CB87A"); })
+    .catch(onErr);
 }
 function removeStudent_(id){
-  if(!dbRef || offline || !connected) return;
+  if(!canSave()) return;
   _selfWrite = Date.now();
   dbRef.child("students").child(id).remove().catch(onErr);
 }
 function saveCuts_(key){
-  if(!dbRef || offline || !connected) return;
+  if(!canSave()) return;
   _selfWrite = Date.now();
   dbRef.child("cuts").child(key).set(cuts[key]||null).catch(onErr);
 }
 function saveTag_(key,q,val){
-  if(!dbRef || offline || !connected) return;
+  if(!canSave()) return;
   _selfWrite = Date.now();
   dbRef.child("tags").child(key).child(String(q)).set(val||null).catch(onErr);
 }
 // 최초 명단 등록 등 일괄 저장이 필요할 때만 사용
 function persistAll(){
-  if(!dbRef || offline || !connected) return;
+  if(!canSave()) return;
   _selfWrite = Date.now();
   const so={}, ao={};
   students.forEach(x=>so[x.id]=x);
